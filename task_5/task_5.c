@@ -12,6 +12,12 @@ Tasks:
 #define ULTRA_ECHO 0
 #define ROTARY_PIN 4 // tbh idk what pin, might be diff
 
+/* Global Vars for Ultrasonic Sensor */
+volatile uint32_t echo_start_time = 0;
+volatile uint32_t echo_end_time = 0;
+volatile uint32_t echo_time_diff = 0;
+
+/* Global Vars for Wheel Encoder */
 int timeout = 26100;
 volatile uint32_t global_pulse_count = 0;
 absolute_time_t last_time;  // tracks previous point in time that the timing pulse was generated
@@ -24,6 +30,12 @@ void ultSonicPinInit() {
     gpio_set_dir(ULTRA_ECHO, GPIO_IN);  // Pin receives the data of incoming reflected sound wave
 }
 
+void send_pulse(uint trigger_pin) {
+    gpio_put(trigger_pin, 1);
+    sleep_us(10);
+    gpio_put(trigger_pin, 0);
+}
+
 /* Return time difference between when echo_pin goes from 1 to 0*/
 uint32_t echo_pulse(uint trigger_pin, uint echo_pin) {
     gpio_put(trigger_pin, 1);   //sends out a HIGH signal from trigger_pin
@@ -33,21 +45,47 @@ uint32_t echo_pulse(uint trigger_pin, uint echo_pin) {
     uint64_t width = 0;
     
     while (gpio_get(echo_pin) == 0) tight_loop_contents(); // wait until echo_pin == 1 (receive echo)
-    uint32_t startTime = time_us_32();    // get time when pin goes HIGH
+    uint32_t start_time = time_us_32();    // get time when pin goes HIGH
     while (gpio_get(echo_pin) == 1)// wait until echo_pin goes back to 0 implement interrupt for timing instead of blocking
     {
         width++;
         sleep_us(1);    // wait 1 microsecond
         if (width > timeout) return 0;
     }
-    uint32_t endTime = time_us_32();  // get the time when pin goes LOW
-    uint32_t time_diff = endTime - startTime;
+    uint32_t end_time = time_us_32();  // get the time when pin goes LOW
+    uint32_t time_diff = end_time - start_time;
     return time_diff;
+}
+
+/* ISR for Echo Pin receiving return pulse.
+    Sets start time when pin detected HIGH
+    Sets end time when pin goes LOW */
+void echoPinReceiveInterrupt() {
+    switch (gpio_get_out_level(ULTRA_ECHO)) {// check signal HIGH or LOW
+        case true:  //HIGH
+            echo_end_time =  0;   // clears previous end timing
+            echo_start_time = time_us_32();   // sets new start timing
+            printf("ECHO RECEIVED Start time: %.2u\n", echo_start_time);
+            break;
+        case false:
+            echo_end_time = time_us_32();
+            echo_time_diff = echo_end_time - echo_start_time;   // calculate the duration of the echo
+            printf("End time: %.2u\n", echo_end_time);
+            //sleep_ms(10);
+            break;
+    }
 }
 
 float getCm(uint trigPin, uint echoPin) {
     uint32_t pulseLength = echo_pulse(trigPin, echoPin);
     float distance = (pulseLength / 2.0 ) * 0.0343;    // speed of sound (echo) is 34300 cm/s
+    return distance;
+}
+
+float getCm2(uint trigPin) {
+    send_pulse(trigPin);
+    uint32_t pulseLength = echo_time_diff;
+    float distance = ( pulseLength / 2.0 ) * 0.0343;
     return distance;
 }
 
@@ -99,18 +137,21 @@ int main() {
 
     /*Just uncomment these parts to show the ultrasonic sensor*/
     // printf("Started measuring object distance");
-    uint64_t obj_distance = 0;
+    float obj_distance = 0.0;
+    float obj_distance2 = 0.0;
     // while(true) {
     //     obj_distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
     //     printf("[Ultrasonic] Distance from object %.2ld cm/n", (long)obj_distance);
     // }
-
-    gpio_set_irq_enabled_with_callback(ROTARY_PIN, GPIO_IRQ_EDGE_RISE, true, &sensor_pulse_interrupt_handler);
+    gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &echoPinReceiveInterrupt);
+    //gpio_set_irq_enabled_with_callback(ROTARY_PIN, GPIO_IRQ_EDGE_RISE, true, &sensor_pulse_interrupt_handler);  // interrupts for counting wheel encoder pulses
     printf("Measuring rotation speed of wheel");
     float wheel_speed;
     while (true) {
         obj_distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
-        printf("[Ultrasonic] Distance from object %.2ld cm\n", (long)obj_distance);
+        obj_distance2 = getCm2(ULTRA_TRIG);
+        printf("[Ultrasonic] Distance from object %.2f cm\n", obj_distance);
+        printf("[Ultrasonic Int] Distance from obj %.2f cm\n", obj_distance2);
         wheel_speed = getWheelSpeed(1000);
         printf("[Wheel Encoder] The wheel is rotating at %.2ld m/s\n", (long)wheel_speed);
     }
