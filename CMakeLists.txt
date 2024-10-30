@@ -7,6 +7,8 @@ target_include_directories(wheel_speed PRIVATE ${CMAKE_CURRENT_LIST_DIR} ${CMAKE
 target_link_libraries(wheel_speed
         hardware_adc
         hardware_pwm
+        hardware_gpio 
+        hardware_timer 
         pico_stdlib
         FreeRTOS-Kernel-Heap4 # FreeRTOS kernel and dynamic heap
         )
