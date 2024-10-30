@@ -54,6 +54,8 @@ void measure_pulse_width_and_classify(bool from_black_to_white, int sensor_id) {
         printf("Current Barcode Elements: %s\n", barcode_elements);
     } else {
         printf("Max barcode storage capacity reached.\n");
+        printf("Current Barcode Elements: %s\n", barcode_elements);
+        element_count = 0;
     }
 
     pulse_start = pulse_end;  // Reset start time for the next pulse
