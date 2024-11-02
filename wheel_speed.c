@@ -45,6 +45,12 @@ int timeout = 26100;
 volatile uint32_t global_pulse_count = 0;
 absolute_time_t last_time;  // tracks previous point in time that the timing pulse was generated
 
+#define DESIRED_DISTANCE 15.0 // Distance threshold in cm for object detection
+volatile bool pulse_started = false;
+volatile uint32_t pulse_start_time = 0;
+volatile uint32_t pulse_end_time = 0;
+volatile bool object_detected = false;
+
 // initialize GPIO and PWM
 void init_motor_control() {
     // Direction pins
@@ -109,12 +115,14 @@ void set_motor_spd(int pin, float speed_percent) {
     printf("Set speed of pin %d to %f\n", pin, speed_percent);
 }
 
-void turn_right(bool turn_right) {
+void turn_right(bool turn_right, float speed) {
     if (turn_right) {
         gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
         gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
         sleep_ms(1000);
         printf("Turning right\n");
+        set_motor_spd(PWM_PIN1, speed);
+        set_motor_spd(PWM_PIN2, 0);
         gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); //clockwise
         gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); //anticlockwise
         /* set_motor_spd(PWM_PIN1, 100);
@@ -128,7 +136,7 @@ void turn_right(bool turn_right) {
 }
 
 // Interrupt Service Routine for button presses
-void button_isr(uint gpio, uint32_t events) {
+/* void button_isr(uint gpio, uint32_t events) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (events & GPIO_IRQ_EDGE_FALL) {
         if (!debounce_button(gpio)) return; // Debounce check
@@ -146,24 +154,24 @@ void button_isr(uint gpio, uint32_t events) {
         }
     }
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
+} */
 
 // Task to handle motor direction based on button input
-void direction_task(void *pvParameters) {
+/* void direction_task(void *pvParameters) {
     while (true) {
         uint32_t msg;
         if (xMessageBufferReceive(directionMessageBuffer, &msg, sizeof(msg), portMAX_DELAY)) {
             if (msg == DIR_BTN) {
-                /* is_clockwise = !is_clockwise;
+                is_clockwise = !is_clockwise;
                 set_motor_direction(is_clockwise);
-                printf("Direction toggled: %s\n", is_clockwise ? "Clockwise" : "Counterclockwise"); */
+                printf("Direction toggled: %s\n", is_clockwise ? "Clockwise" : "Counterclockwise");
                 turn_right(!turning_right);
                 turning_right = !turning_right;
             }
             
         }
     }
-}
+} */
 
 // Task to handle motor speed based on button input
 void speed_task(void *pvParameters) {
@@ -314,35 +322,109 @@ float pid_controller(float current_distance) {
     return output;
 }
 
-void ultrasonic_task(void *pvParameters) {
+void ultrasonic_echo_isr(uint gpio, uint32_t events) {
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        pulse_start_time = time_us_32(); // Start timing
+        pulse_started = true;
+    }
+    else if (events & GPIO_IRQ_EDGE_FALL && pulse_started) {
+        pulse_end_time = time_us_32();   // End timing
+        uint32_t pulse_duration = pulse_end_time - pulse_start_time;
+        pulse_started = false;
+
+        // Calculate distance in cm
+        float distance = (pulse_duration / 2.0) * 0.0343;
+        
+        // If the distance is within the threshold, set object detection flag
+        if (distance <= DESIRED_DISTANCE && distance > 1.0) {
+            object_detected = true;
+        }
+    }
+}
+
+
+// Send trigger pulse to ultrasonic sensor
+void send_trigger_pulse() {
+    gpio_put(ULTRA_TRIG, 1);
+    sleep_us(10); // Pulse duration
+    gpio_put(ULTRA_TRIG, 0);
+}
+
+// Task to monitor distance and turn if necessary
+/* void ultrasonic_task(void *pvParameters) {
     bool in_cooldown = false;
     while (true) {
         if (!in_cooldown) {
             float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
             xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
 
-            if (distance <= 10.0 && distance > 1.0) { // If object is within 10 cm, trigger PID-based turn
+            if (distance <= 10.0 && distance > 1.0) { // If object is within 10 cm
                 printf("Object detected at %.2f cm\n", distance);
-                float turn_speed = pid_controller(distance); // Use PID controller to get turn speed
-                set_motor_spd(PWM_PIN1, turn_speed);         // Adjust speed of each wheel to turn
-                set_motor_spd(PWM_PIN2, turn_speed / 1.5);     // Adjust one wheel slower to turn
-                turn_right(turning_right);                            // Set turning right action
-                turning_right = !turning_right;                 // Toggle turning direction */
-                in_cooldown = true;                          // Activate cooldown to stop further scanning
+                
+                // Call PID controller to determine the speed for turning
+                float turn_speed = pid_controller(distance);
+
+                // Use turn speed in turn_right function to perform right turn
+                turn_right(true, turn_speed);
+
+                // Enable cooldown to prevent further detection within 1 second
+                in_cooldown = true;
             } else if (distance == 0.0 || distance > 10.0) {
-                set_motor_direction(is_clockwise);           // Maintain forward motion if no object detected
-                set_motor_spd(PWM_PIN1, 100);
-                set_motor_spd(PWM_PIN2, 100);
+                // Resume forward movement if no object is detected within range
+                set_motor_direction(is_clockwise);
+                set_motor_spd(PWM_PIN1, motor_speed);
+                set_motor_spd(PWM_PIN2, motor_speed);
             }
         } else {
             // Cooldown period after detecting an obstacle, e.g., 1 second
-            vTaskDelay(pdMS_TO_TICKS(1000));                 // Delay for 1 second to prevent re-triggering
-            in_cooldown = false;                             // Reset cooldown to resume scanning
+            vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for 1 second to prevent re-triggering
+            in_cooldown = false;  // Reset cooldown to resume scanning
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100)); // Main task delay for periodic distance checking
+        // Task delay for periodic distance checking
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+} */
+
+// Task to monitor distance and turn if necessary
+void ultrasonic_task(void *pvParameters) {
+    bool in_cooldown = false;
+
+    while (true) {
+        if (!in_cooldown) {
+            // Send a trigger pulse
+            float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
+
+            // Check if an object is detected
+            if (object_detected) {
+                printf("Object detected within threshold. Turning right...\n");
+                float turn_speed = pid_controller(distance);
+                // Call the turn_right function to initiate a right turn
+                turn_right(true, turn_speed);
+
+                // Reset the object_detected flag and start cooldown
+                object_detected = false;
+                in_cooldown = true;
+
+                // Delay to prevent immediate re-triggering
+                vTaskDelay(pdMS_TO_TICKS(1000));  // Adjust the delay as needed
+            } else if (distance == 0.0 || distance > 10.0) {
+                // If no object is detected, continue moving forward
+                set_motor_direction(is_clockwise);
+                set_motor_spd(PWM_PIN1, motor_speed);
+                set_motor_spd(PWM_PIN2, motor_speed);
+            }
+        } else {
+            // Cooldown period to avoid continuous triggering
+            vTaskDelay(pdMS_TO_TICKS(1000));  // Cooldown duration
+            in_cooldown = false;
+        }
+
+        
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
+
 
 
 void print_dist_task(void *pvParameters) {
@@ -393,21 +475,16 @@ int main() {
     gpio_set_irq_enabled_with_callback(HISPD_BTN, GPIO_IRQ_EDGE_FALL, true, &button_isr); */
     
     gpio_set_irq_enabled_with_callback(ROTARY_PIN, GPIO_IRQ_EDGE_RISE, true, &sensor_pulse_interrupt_handler);
+    gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &ultrasonic_echo_isr);
 
-    xTaskCreate(direction_task, "Direction Task", 512, NULL, 1, NULL);
-    xTaskCreate(speed_task, "Speed Task", 512, NULL, 1, NULL);
+    /* xTaskCreate(direction_task, "Direction Task", 512, NULL, 1, NULL);
+    xTaskCreate(speed_task, "Speed Task", 512, NULL, 1, NULL); */
     xTaskCreate(ultrasonic_task, "Ultrasonic Task", 512, NULL, 1, NULL);
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
 
     vTaskStartScheduler();
-
-/*     uint64_t obj_distance = 0;
-    while (true) {
-        obj_distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
-        printf("[Ultrasonic] Distance from object %.2ld cm\n", (long)obj_distance);
-    } */
 
     return 0;
 }
