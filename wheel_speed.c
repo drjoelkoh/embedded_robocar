@@ -322,7 +322,7 @@ float pid_controller(float current_distance) {
     return output;
 }
 
-void ultrasonic_echo_isr(uint gpio, uint32_t events) {
+/* void ultrasonic_echo_isr(uint gpio, uint32_t events) {
     if (events & GPIO_IRQ_EDGE_RISE) {
         pulse_start_time = time_us_32(); // Start timing
         pulse_started = true;
@@ -339,6 +339,28 @@ void ultrasonic_echo_isr(uint gpio, uint32_t events) {
         if (distance <= DESIRED_DISTANCE && distance > 1.0) {
             object_detected = true;
         }
+    }
+} */
+
+void ultrasonic_wheel_speed_isr(uint gpio, uint32_t events) {
+    if (gpio == ROTARY_PIN) {
+        global_pulse_count++;
+    } else if (gpio == ULTRA_ECHO) {
+        if (events & GPIO_IRQ_EDGE_RISE) {
+            pulse_start_time = time_us_32();
+            pulse_started = true;
+        } else if (events & GPIO_IRQ_EDGE_FALL && pulse_started) {
+            pulse_end_time = time_us_32();
+            uint32_t pulse_duration = pulse_end_time - pulse_start_time;
+            pulse_started = false;
+
+            // Calculate distance in cm
+            float distance = (pulse_duration / 2.0) * 0.0343;
+            if (distance <= DESIRED_DISTANCE && distance > 1.0) {
+                object_detected = true;
+            }
+        }
+
     }
 }
 
@@ -474,8 +496,8 @@ int main() {
     gpio_set_irq_enabled_with_callback(LOWSPD_BTN, GPIO_IRQ_EDGE_FALL, true, &button_isr);
     gpio_set_irq_enabled_with_callback(HISPD_BTN, GPIO_IRQ_EDGE_FALL, true, &button_isr); */
     
-    gpio_set_irq_enabled_with_callback(ROTARY_PIN, GPIO_IRQ_EDGE_RISE, true, &sensor_pulse_interrupt_handler);
-    gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &ultrasonic_echo_isr);
+    gpio_set_irq_enabled_with_callback(ROTARY_PIN, GPIO_IRQ_EDGE_RISE, true, &ultrasonic_wheel_speed_isr);
+    gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &ultrasonic_wheel_speed_isr);
 
     /* xTaskCreate(direction_task, "Direction Task", 512, NULL, 1, NULL);
     xTaskCreate(speed_task, "Speed Task", 512, NULL, 1, NULL); */
