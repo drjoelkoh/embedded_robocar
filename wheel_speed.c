@@ -43,11 +43,14 @@ MessageBufferHandle_t wheelSpeedMessageBuffer;
 #define ULTRA_ECHO 6
 #define ROTARY_PIN 16 // not needed now rmb to change pin number
 #define WHEEL_CIRCUMFERENCE 21.0 // in cm
-#define PULSE_PER_REV 20
+#define ENCODER_CIRCUMFERENCE 9.0 // in cm
+#define PULSES_PER_REV 20
+
 int timeout = 26100;
 volatile uint32_t global_pulse_count = 0;
 absolute_time_t last_time;  // tracks previous point in time that the timing pulse was generated
 float last_printed_distance = -1.0;
+float total_distance_travelled = 0.0;
 
 #define DESIRED_DISTANCE 15.0 // Distance threshold in cm for object detection
 volatile bool pulse_started = false;
@@ -91,17 +94,6 @@ void init_motor_control() {
     gpio_init(HISPD_BTN); 
     gpio_set_dir(HISPD_BTN, GPIO_IN); 
     gpio_set_pulls(HISPD_BTN, true, false); 
-}
-
-bool debounce_button(uint gpio) {
-    static absolute_time_t last_interrupt_time = {0};
-    absolute_time_t current_time = get_absolute_time();
-    int64_t time_diff = absolute_time_diff_us(last_interrupt_time, current_time);
-    if (time_diff > DEBOUNCE_DELAY_MS * 1000) {
-        last_interrupt_time = current_time;
-        return true;
-    }
-    return false;
 }
 
 void set_motor_direction(bool clockwise) {
@@ -163,20 +155,6 @@ void speed_task(void *pvParameters) {
     }
 }
 
-//implement ltr
-float get_remote_control_speed() {
-    return 100;
-}
-
-bool get_remote_control_direction() {
-    //return left right forward backward
-    return true;
-}
-
-double wheel_encoder_get_speed(int pin) {
-    return 50;
-}
-
 /* Initialise the Photo Interrupt sensor input pin */
 void encoderPinInit() {
     gpio_init(ROTARY_PIN);
@@ -184,14 +162,17 @@ void encoderPinInit() {
     gpio_pull_down(ROTARY_PIN); // (HIGH=1,LOW=0)
     
 }
-/* Increase pulse count when a rising edge of disc pulse is detected */
-void sensor_pulse_interrupt_handler(uint gpio, uint32_t events) {
-    global_pulse_count++;
-}
 
 /* Calculates number of pulses divided by timeframe to get speed at point in time*/
 float getRevsPerMin(uint32_t timeframe_pulse_counts, float duration_sec) {
     return (timeframe_pulse_counts / duration_sec) * 60.0f;
+}
+
+void updateDistanceTraveled() {
+    // Calculate distance per pulse
+    float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV; // in cm
+    total_distance_travelled += global_pulse_count * distance_per_pulse; // Total distance
+    global_pulse_count = 0; // Reset pulse count
 }
 
 /* Uses the photo interrupter sensor to measure the rotational speed of the encoder
@@ -211,7 +192,8 @@ float getWheelSpeed(float sample_time_ms) {
     current_time = get_absolute_time();
     duration_seconds = absolute_time_diff_us(last_time, current_time) / 1e6;  //time difference in microseconds then convert into seconds
     revs_per_min = getRevsPerMin(global_pulse_count, duration_seconds);
-    printf("[Encoder] Pulses: %ld\n", (long)global_pulse_count);
+    updateDistanceTraveled();
+    //printf("[Encoder] Pulses: %ld",  (long)global_pulse_count);
 
     global_pulse_count = 0; // reset pulse count
     last_time = current_time;   // set 'new' time to reference previous time from
@@ -230,7 +212,7 @@ void printWheelSpeedTask(void *pvParameters) {
     float speed;
     while (true) {
         if (xMessageBufferReceive(wheelSpeedMessageBuffer, &speed, sizeof(speed), portMAX_DELAY) > 0) {
-            printf("[Encoder] Wheel speed: %.2f RPM\n", speed);
+            printf("[Encoder] Wheel speed: %.2f RPM, Total distance traveled: %.2f cm\n", speed, total_distance_travelled);
         }
     }
 }
@@ -335,7 +317,7 @@ void ultrasonic_task(void *pvParameters) {
 
             // Check if an object is detected
             if (object_detected) {
-                printf("[Ultrasonic] Object detected within threshold. Turning right...\n");
+                printf("[Ultrasonic] Object detected at %.2f cm\n . Turning right...\n", distance);
                 float turn_speed = pid_controller(distance);
                 // Call the turn_right function to initiate a right turn
                 turn_right(true, turn_speed);
@@ -372,7 +354,7 @@ void print_dist_task(void *pvParameters) {
         if (xMessageBufferReceive(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY) > 0) {
             // Check if the distance is different from the last printed value
             if (distance != last_printed_distance) {
-                printf("[Ultrasonic] Distance from object: %.2f cm\n", distance);
+                //printf("[Ultrasonic] Distance from object: %.2f cm\n", distance);
                 last_printed_distance = distance; // Update last printed distance
             }
         }
