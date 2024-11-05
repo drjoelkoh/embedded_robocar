@@ -21,11 +21,9 @@
 #define HISPD_BTN 22
 #define DEBOUNCE_DELAY_MS 100
 #define pwm_freq 500
-// pid controller
-#define Kp 1.0
-#define Ki 0.5
-#define Kd 0.1
-#define dt 0.5
+#define MAX_SPEED 100
+#define MAX_RPM 2400
+
 
 bool is_clockwise = true;
 bool turning_right = false;
@@ -37,21 +35,26 @@ uint16_t wrap_value = 0;
 MessageBufferHandle_t directionMessageBuffer;
 MessageBufferHandle_t speedMessageBuffer; 
 MessageBufferHandle_t objectDistanceMessageBuffer;
-MessageBufferHandle_t wheelSpeedMessageBuffer;
+MessageBufferHandle_t leftWheelSpeedMessageBuffer;
+MessageBufferHandle_t rightWheelSpeedMessageBuffer;
 
 //ultrasonic and ir sensor stuff
 #define ULTRA_TRIG 7
 #define ULTRA_ECHO 6
-#define ROTARY_PIN 16 // not needed now rmb to change pin number
+#define ROTARY_PIN_L 16 // not needed now rmb to change pin number
+#define ROTARY_PIN_R 8
 #define WHEEL_CIRCUMFERENCE 21.0 // in cm
 #define ENCODER_CIRCUMFERENCE 9.0 // in cm
 #define PULSES_PER_REV 20
 
 int timeout = 26100;
-volatile uint32_t global_pulse_count = 0;
-absolute_time_t last_time;  // tracks previous point in time that the timing pulse was generated
+volatile uint32_t global_pulse_count_left = 0;
+volatile uint32_t global_pulse_count_right = 0;
+absolute_time_t last_pulse_time_left;  // tracks previous point in time that the timing pulse was generated
+absolute_time_t last_pulse_time_right;
 float last_printed_distance = -1.0;
 float total_distance_travelled = 0.0;
+float target_rpm = 2300;
 
 #define DESIRED_DISTANCE 20.0 // Distance threshold in cm for object detection
 volatile bool pulse_started = false;
@@ -59,6 +62,10 @@ volatile uint32_t pulse_start_time = 0;
 volatile uint32_t pulse_end_time = 0;
 volatile bool object_detected = false;
 volatile bool turn_in_progress = false;
+volatile bool stopping = false;
+volatile bool stopped = false;
+volatile bool motor_control_enabled = true;
+
 
 // initialize GPIO and PWM
 void init_motor_control() {
@@ -105,39 +112,65 @@ void set_motor_direction(bool clockwise) {
     
 }
 
+float convertRPMToSpeed(float rpm) {
+    return (rpm / MAX_RPM) * MAX_SPEED;
+}
+
 void set_motor_spd(int pin, float speed_percent) {
     if (speed_percent < 0) speed_percent = 0;
     if (speed_percent > 100) speed_percent = 100;
+
     uint16_t duty_cycle = (uint16_t)((speed_percent / 100.0) * wrap_value); 
     pwm_set_gpio_level(pin, duty_cycle);
     if (speed_percent != prev_motor_speed) {
-        printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
+        //printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
         prev_motor_speed = speed_percent; // Update last printed speed
     }
 }
+
+void set_motor_rpm(int pin, float rpm) {
+    if (rpm > MAX_RPM) rpm = MAX_RPM;
+    float speed = convertRPMToSpeed(rpm);
+    set_motor_spd(pin, speed);
+}
+
+
 
 void go_stop(float distance) {
     float current_distance = total_distance_travelled;
     float stop_at = current_distance + distance;
     printf("Current distance: %.2f cm\n, Stopping at: %.2f cm\n", current_distance, stop_at);
-
-    while (true) {
+    while (total_distance_travelled < stop_at) {
+        // Optionally add some sleep to prevent busy waiting
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    set_motor_spd(PWM_PIN1, 0);
+    set_motor_spd(PWM_PIN2, 0);
+    is_moving = false;
+    motor_control_enabled = false;
+    stopped = true;
+    printf("Stopped at %.2f cm\n", total_distance_travelled);
+    /* while (true) {
         if (total_distance_travelled >= stop_at) {
             set_motor_spd(PWM_PIN1, 0);
             set_motor_spd(PWM_PIN2, 0);
             is_moving = false;
+            motor_control_enabled = false;
+            stopped = true;
+            printf("Stopped at %.2f cm\n", total_distance_travelled);
             break;
         }
-    }
+    } */
 }
 
 void turn_right_90(float speed) {
+    motor_control_enabled = false;
     float wheelbase = 9.0; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
     float turn_distance = (3.14159 * wheelbase) / 2.0; // turning radius for 90 degrees
     float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV;
     uint32_t required_pulses = (turn_distance / distance_per_pulse) / 2.0;
 
-    global_pulse_count = 0; // Reset pulse count
+    global_pulse_count_left = 0; // Reset pulse count
     set_motor_spd(PWM_PIN1, speed);
     set_motor_spd(PWM_PIN2, 0);
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
@@ -148,9 +181,9 @@ void turn_right_90(float speed) {
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); // clockwise
     gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); // anticlockwise
     
-    while (global_pulse_count < (required_pulses)) {
+    while (global_pulse_count_left < (required_pulses)) {
         // Wait until the pulses count reaches the required amount
-        printf("Pulses: %ld\n", (long)global_pulse_count);
+        //printf("Pulses: %ld\n", (long)global_pulse_count_left);
         tight_loop_contents(); // Idle while waiting
     }
     
@@ -158,6 +191,7 @@ void turn_right_90(float speed) {
     set_motor_spd(PWM_PIN1, 0);
     set_motor_spd(PWM_PIN2, 0);
     printf("Completed 90-degree turn\n");
+    motor_control_enabled = true;
     
 }
 
@@ -209,9 +243,9 @@ void turn_right_90(float speed) {
 
 /* Initialise the Photo Interrupt sensor input pin */
 void encoderPinInit() {
-    gpio_init(ROTARY_PIN);
-    gpio_set_dir(ROTARY_PIN, GPIO_IN);
-    gpio_pull_down(ROTARY_PIN); // (HIGH=1,LOW=0)
+    gpio_init(ROTARY_PIN_L);
+    gpio_set_dir(ROTARY_PIN_L, GPIO_IN);
+    gpio_pull_down(ROTARY_PIN_L); // (HIGH=1,LOW=0)
     
 }
 
@@ -223,8 +257,8 @@ float getRevsPerMin(uint32_t timeframe_pulse_counts, float duration_sec) {
 void updateDistanceTraveled() {
     // Calculate distance per pulse
     float distance_per_pulse = WHEEL_CIRCUMFERENCE / PULSES_PER_REV; // in cm
-    total_distance_travelled += global_pulse_count * distance_per_pulse; // Total distance
-    global_pulse_count = 0; // Reset pulse count
+    total_distance_travelled += global_pulse_count_left * distance_per_pulse; // Total distance
+    global_pulse_count_left = 0; // Reset pulse count
 }
 
 /* Uses the photo interrupter sensor to measure the rotational speed of the encoder
@@ -235,27 +269,47 @@ ARGS: sample+time_ms: duration which the wheelspeed is measured over (ms)
 3. Divide the disc_pulse_count value by the duration of one time_pulse 
 4. 
 5. [To be implemented later] Multiply rotational speed by car wheel circumference to get actual distance and speed*/
-float getWheelSpeed(float sample_time_ms) {
+float getLeftWheelRPM(float sample_time_ms) {
     // measure the RPM at 
     absolute_time_t current_time;
     float duration_seconds, revs_per_min;
 
     sleep_ms(sample_time_ms); // 
     current_time = get_absolute_time();
-    duration_seconds = absolute_time_diff_us(last_time, current_time) / 1e6;  //time difference in microseconds then convert into seconds
-    revs_per_min = getRevsPerMin(global_pulse_count, duration_seconds);
+    duration_seconds = absolute_time_diff_us(last_pulse_time_left, current_time) / 1e6;  //time difference in microseconds then convert into seconds
+    revs_per_min = getRevsPerMin(global_pulse_count_left, duration_seconds);
     updateDistanceTraveled();
-    //printf("[Encoder] Pulses: %ld",  (long)global_pulse_count);
+    //printf("[Encoder] Pulses: %ld",  (long)global_pulse_count_left);
 
-    global_pulse_count = 0; // reset pulse count
-    last_time = current_time;   // set 'new' time to reference previous time from
+    global_pulse_count_left = 0; // reset pulse count
+    last_pulse_time_left = current_time;   // set 'new' time to reference previous time from
     return revs_per_min;
 }
+
+float getRightWheelRPM(float sample_time_ms) {
+    // measure the RPM at 
+    absolute_time_t current_time;
+    float duration_seconds, revs_per_min;
+
+    sleep_ms(sample_time_ms); // 
+    current_time = get_absolute_time();
+    duration_seconds = absolute_time_diff_us(last_pulse_time_right, current_time) / 1e6;  //time difference in microseconds then convert into seconds
+    revs_per_min = getRevsPerMin(global_pulse_count_right, duration_seconds);
+    updateDistanceTraveled();
+    //printf("[Encoder] Pulses: %ld",  (long)global_pulse_count_left);
+
+    global_pulse_count_right = 0; // reset pulse count
+    last_pulse_time_right = current_time;   // set 'new' time to reference previous time from
+    return revs_per_min;
+}
+
 void wheel_speed_task(void *pvParameters) {
     const TickType_t sampleTimeTicks = pdMS_TO_TICKS(1000);
     while (true) {
-        float speed = getWheelSpeed(100);  
-        xMessageBufferSend(wheelSpeedMessageBuffer, &speed, sizeof(speed), portMAX_DELAY);
+        float speedL = getLeftWheelRPM(100);  
+        xMessageBufferSend(leftWheelSpeedMessageBuffer, &speedL, sizeof(speedL), portMAX_DELAY);
+        float speedR = getRightWheelRPM(100);
+        xMessageBufferSend(rightWheelSpeedMessageBuffer, &speedR, sizeof(speedR), portMAX_DELAY);
         vTaskDelay(sampleTimeTicks); // Delay for the sampling period
     }
 }
@@ -263,8 +317,11 @@ void wheel_speed_task(void *pvParameters) {
 void printWheelSpeedTask(void *pvParameters) {
     float speed;
     while (true) {
-        if (xMessageBufferReceive(wheelSpeedMessageBuffer, &speed, sizeof(speed), portMAX_DELAY) > 0) {
-            printf("[Encoder] Wheel speed: %.2f RPM, Total distance traveled: %.2f cm\n", speed, total_distance_travelled);
+        if (xMessageBufferReceive(leftWheelSpeedMessageBuffer, &speed, sizeof(speed), portMAX_DELAY) > 0) {
+            printf("[Encoder] Left wheel rpm: %.2f RPM\n", speed);
+        }
+        if (xMessageBufferReceive(rightWheelSpeedMessageBuffer, &speed, sizeof(speed), portMAX_DELAY) > 0) {
+            printf("[Encoder] Right wheel rpm: %.2f RPM\n", speed);
         }
     }
 }
@@ -305,10 +362,16 @@ float getCm(uint trigPin, uint echoPin) {
     return distance;
 }
 
-float desired_distance = 10.0; // desired distance in cm
-float prev_error = 0.0, integral = 0.0;
 
-float pid_controller(float current_distance) {
+
+float pid_turn_speed(float current_distance) {
+    // pid controller
+    float Kp = 1.0;
+    float Ki = 0.5;
+    float Kd = 0.1;
+    float dt = 0.5;
+    float desired_distance = 10.0; // desired distance in cm
+    float prev_error = 0.0, integral = 0.0;
     float error = desired_distance - current_distance;
     integral += error * dt; // Accumulate error over time
     float derivative = (error - prev_error) / dt; // Rate of change of error
@@ -328,9 +391,11 @@ float pid_controller(float current_distance) {
 
 
 void ultrasonic_wheel_speed_isr(uint gpio, uint32_t events) {
-    if (gpio == ROTARY_PIN) {
-        global_pulse_count++;
-    } else if (gpio == ULTRA_ECHO) {
+    if (gpio == ROTARY_PIN_L) {
+        global_pulse_count_left++;
+    } else if (gpio == ROTARY_PIN_R) {
+        global_pulse_count_right++;
+    }   else if (gpio == ULTRA_ECHO) {
         if (events & GPIO_IRQ_EDGE_RISE) {
             pulse_start_time = time_us_32();
             pulse_started = true;
@@ -362,7 +427,7 @@ void ultrasonic_task(void *pvParameters) {
     bool in_cooldown = false;
 
     while (true) {
-        if (!in_cooldown) {
+        if (!in_cooldown && !stopped) {
             // Send a trigger pulse
             float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
             xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
@@ -370,7 +435,7 @@ void ultrasonic_task(void *pvParameters) {
             // Check if an object is detected
             if (object_detected && !turn_in_progress) {
                 printf("[Ultrasonic] Object detected at %.2f cm\n . Turning right...\n", distance);
-                float turn_speed = pid_controller(distance);
+                float turn_speed = pid_turn_speed(distance);
                 // Call the turn_right function to initiate a right turn
                 /* turn_right(true, turn_speed); */
                 turn_right_90(turn_speed);
@@ -383,7 +448,8 @@ void ultrasonic_task(void *pvParameters) {
                 set_motor_direction(is_clockwise);
                 set_motor_spd(PWM_PIN1, 100);
                 set_motor_spd(PWM_PIN2, 100); 
-                go_stop(90.0); 
+                go_stop(90.0);
+                stopping = true;
                 // Delay to prevent immediate re-triggering
                 vTaskDelay(pdMS_TO_TICKS(2000));  // Adjust the delay as needed
                 printf("Cooldown period started\n");
@@ -393,6 +459,10 @@ void ultrasonic_task(void *pvParameters) {
                     set_motor_direction(is_clockwise);
                     set_motor_spd(PWM_PIN1, 100);
                     set_motor_spd(PWM_PIN2, 100); 
+                }
+                if (stopped) {
+                    set_motor_spd(PWM_PIN1, 0);
+                    set_motor_spd(PWM_PIN2, 0);
                 }
                 // If no object is detected, continue moving forward
                 /* set_motor_direction(is_clockwise);
@@ -453,8 +523,14 @@ int main() {
         return 1;
     }
 
-    wheelSpeedMessageBuffer = xMessageBufferCreate(64);
-    if (wheelSpeedMessageBuffer == NULL) {
+    leftWheelSpeedMessageBuffer = xMessageBufferCreate(64);
+    if (leftWheelSpeedMessageBuffer == NULL) {
+        printf("Wheel speed message buffer creation failed!\n");
+        return 1;
+    }
+
+    rightWheelSpeedMessageBuffer = xMessageBufferCreate(64);
+    if (rightWheelSpeedMessageBuffer == NULL) {
         printf("Wheel speed message buffer creation failed!\n");
         return 1;
     }
@@ -464,7 +540,8 @@ int main() {
     gpio_set_irq_enabled_with_callback(LOWSPD_BTN, GPIO_IRQ_EDGE_FALL, true, &button_isr);
     gpio_set_irq_enabled_with_callback(HISPD_BTN, GPIO_IRQ_EDGE_FALL, true, &button_isr); */
     
-    gpio_set_irq_enabled_with_callback(ROTARY_PIN, GPIO_IRQ_EDGE_RISE, true, &ultrasonic_wheel_speed_isr);
+    gpio_set_irq_enabled_with_callback(ROTARY_PIN_L, GPIO_IRQ_EDGE_RISE, true, &ultrasonic_wheel_speed_isr);
+    gpio_set_irq_enabled_with_callback(ROTARY_PIN_R, GPIO_IRQ_EDGE_RISE, true, &ultrasonic_wheel_speed_isr);
     gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &ultrasonic_wheel_speed_isr);
 
     /* xTaskCreate(direction_task, "Direction Task", 512, NULL, 1, NULL);
@@ -473,6 +550,8 @@ int main() {
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
+    
+    //xTaskCreate(pid_speed_balancer, "PID Speed Balancer Task", 512, NULL, 1, NULL);
 
     vTaskStartScheduler();
 
