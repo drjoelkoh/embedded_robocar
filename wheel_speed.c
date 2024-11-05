@@ -29,6 +29,7 @@
 
 bool is_clockwise = true;
 bool turning_right = false;
+bool is_moving = true;
 float motor_speed = 100;
 float prev_motor_speed = 0;
 float pwm_clock = 0;
@@ -115,9 +116,24 @@ void set_motor_spd(int pin, float speed_percent) {
     }
 }
 
+void go_stop(float distance) {
+    float current_distance = total_distance_travelled;
+    float stop_at = current_distance + distance;
+    printf("Current distance: %.2f cm\n, Stopping at: %.2f cm\n", current_distance, stop_at);
+
+    while (true) {
+        if (total_distance_travelled >= stop_at) {
+            set_motor_spd(PWM_PIN1, 0);
+            set_motor_spd(PWM_PIN2, 0);
+            is_moving = false;
+            break;
+        }
+    }
+}
+
 void turn_right_90(float speed) {
     float wheelbase = 9.0; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
-    float turn_distance = (3.14159 * wheelbase) / 2.0;
+    float turn_distance = (3.14159 * wheelbase) / 2.0; // turning radius for 90 degrees
     float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV;
     uint32_t required_pulses = (turn_distance / distance_per_pulse) / 2.0;
 
@@ -206,7 +222,7 @@ float getRevsPerMin(uint32_t timeframe_pulse_counts, float duration_sec) {
 
 void updateDistanceTraveled() {
     // Calculate distance per pulse
-    float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV; // in cm
+    float distance_per_pulse = WHEEL_CIRCUMFERENCE / PULSES_PER_REV; // in cm
     total_distance_travelled += global_pulse_count * distance_per_pulse; // Total distance
     global_pulse_count = 0; // Reset pulse count
 }
@@ -367,15 +383,21 @@ void ultrasonic_task(void *pvParameters) {
                 set_motor_direction(is_clockwise);
                 set_motor_spd(PWM_PIN1, 100);
                 set_motor_spd(PWM_PIN2, 100); 
+                go_stop(90.0); 
                 // Delay to prevent immediate re-triggering
                 vTaskDelay(pdMS_TO_TICKS(2000));  // Adjust the delay as needed
                 printf("Cooldown period started\n");
 
             } else {
+                if (is_moving) {
+                    set_motor_direction(is_clockwise);
+                    set_motor_spd(PWM_PIN1, 100);
+                    set_motor_spd(PWM_PIN2, 100); 
+                }
                 // If no object is detected, continue moving forward
-                set_motor_direction(is_clockwise);
+                /* set_motor_direction(is_clockwise);
                 set_motor_spd(PWM_PIN1, 100);
-                set_motor_spd(PWM_PIN2, 100); 
+                set_motor_spd(PWM_PIN2, 100);  */
                 
             }
         } else {
