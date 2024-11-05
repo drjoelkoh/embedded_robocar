@@ -52,11 +52,12 @@ absolute_time_t last_time;  // tracks previous point in time that the timing pul
 float last_printed_distance = -1.0;
 float total_distance_travelled = 0.0;
 
-#define DESIRED_DISTANCE 15.0 // Distance threshold in cm for object detection
+#define DESIRED_DISTANCE 20.0 // Distance threshold in cm for object detection
 volatile bool pulse_started = false;
 volatile uint32_t pulse_start_time = 0;
 volatile uint32_t pulse_end_time = 0;
 volatile bool object_detected = false;
+volatile bool turn_in_progress = false;
 
 // initialize GPIO and PWM
 void init_motor_control() {
@@ -114,7 +115,37 @@ void set_motor_spd(int pin, float speed_percent) {
     }
 }
 
-void turn_right(bool turn_right, float speed) {
+void turn_right_90(float speed) {
+    float wheelbase = 9.0; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
+    float turn_distance = (3.14159 * wheelbase) / 2.0;
+    float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV;
+    uint32_t required_pulses = (turn_distance / distance_per_pulse) / 2.0;
+
+    global_pulse_count = 0; // Reset pulse count
+    set_motor_spd(PWM_PIN1, speed);
+    set_motor_spd(PWM_PIN2, 0);
+    gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
+    gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
+    sleep_ms(500);
+    
+    // Set directions for turn
+    gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); // clockwise
+    gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); // anticlockwise
+    
+    while (global_pulse_count < (required_pulses)) {
+        // Wait until the pulses count reaches the required amount
+        printf("Pulses: %ld\n", (long)global_pulse_count);
+        tight_loop_contents(); // Idle while waiting
+    }
+    
+    // Stop motors after turn
+    set_motor_spd(PWM_PIN1, 0);
+    set_motor_spd(PWM_PIN2, 0);
+    printf("Completed 90-degree turn\n");
+    
+}
+
+/* void turn_right(bool turn_right, float speed) {
     if (turn_right) {
         gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
         gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
@@ -124,19 +155,24 @@ void turn_right(bool turn_right, float speed) {
         set_motor_spd(PWM_PIN2, 0);
         gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); //clockwise
         gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); //anticlockwise
-        /* set_motor_spd(PWM_PIN1, 100);
-        set_motor_spd(PWM_PIN2, 50); */
+        //set_motor_spd(PWM_PIN1, 100);
+        //set_motor_spd(PWM_PIN2, 50);
+        turn_in_progress = true;
+        printf("Turning flag is now true\n");
+        turn_right_90(speed);
+        
     }
     else {
+        
         set_motor_direction(is_clockwise);
-    }
-
-    
-}
+        set_motor_spd(PWM_PIN1, 100);
+        set_motor_spd(PWM_PIN2, 100);
+    }   
+} */
 
 
 // Task to handle motor speed based on button input
-void speed_task(void *pvParameters) {
+/* void speed_task(void *pvParameters) {
     while (true) {
         uint32_t msg;
         if (xMessageBufferReceive(speedMessageBuffer, &msg, sizeof(msg), portMAX_DELAY)) {
@@ -153,7 +189,7 @@ void speed_task(void *pvParameters) {
             }
         }
     }
-}
+} */
 
 /* Initialise the Photo Interrupt sensor input pin */
 void encoderPinInit() {
@@ -316,23 +352,31 @@ void ultrasonic_task(void *pvParameters) {
             xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
 
             // Check if an object is detected
-            if (object_detected) {
+            if (object_detected && !turn_in_progress) {
                 printf("[Ultrasonic] Object detected at %.2f cm\n . Turning right...\n", distance);
                 float turn_speed = pid_controller(distance);
                 // Call the turn_right function to initiate a right turn
-                turn_right(true, turn_speed);
+                /* turn_right(true, turn_speed); */
+                turn_right_90(turn_speed);
 
                 // Reset the object_detected flag and start cooldown
                 object_detected = false;
+                turn_in_progress = false;
+                printf("Turning flag is now false\n");
                 in_cooldown = true;
-
+                set_motor_direction(is_clockwise);
+                set_motor_spd(PWM_PIN1, 100);
+                set_motor_spd(PWM_PIN2, 100); 
                 // Delay to prevent immediate re-triggering
-                vTaskDelay(pdMS_TO_TICKS(1000));  // Adjust the delay as needed
-            } else if (distance == 0.0 || distance > 10.0) {
+                vTaskDelay(pdMS_TO_TICKS(2000));  // Adjust the delay as needed
+                printf("Cooldown period started\n");
+
+            } else {
                 // If no object is detected, continue moving forward
                 set_motor_direction(is_clockwise);
-                set_motor_spd(PWM_PIN1, motor_speed);
-                set_motor_spd(PWM_PIN2, motor_speed);
+                set_motor_spd(PWM_PIN1, 100);
+                set_motor_spd(PWM_PIN2, 100); 
+                
             }
         } else {
             // Cooldown period to avoid continuous triggering
