@@ -28,9 +28,9 @@ float current_speed = 0;
 bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
-float max_speed = 100;
-float desired_rpm_left = 2300;
-float desired_rpm_right = 2300;
+float max_speed = 70; //target
+float desired_rpm_left = 1800;
+float desired_rpm_right = 1800;
 float prev_motor_speed = 0;
 float pwm_clock = 0;
 uint16_t wrap_value = 0;
@@ -51,12 +51,12 @@ MessageBufferHandle_t rightWheelSpeedMessageBuffer;
 
 int timeout = 26100;
 volatile uint32_t global_pulse_count_left = 0;
+volatile uint32_t global_pulse_count_for_turn_right = 0;
 volatile uint32_t global_pulse_count_right = 0;
 absolute_time_t last_pulse_time_left;  // tracks previous point in time that the timing pulse was generated
 absolute_time_t last_pulse_time_right;
 float last_printed_distance = -1.0;
 float total_distance_travelled = 0.0;
-float target_rpm = 2300;
 
 #define DESIRED_DISTANCE 20.0 // Distance threshold in cm for object detection
 volatile bool pulse_started = false;
@@ -170,27 +170,28 @@ void go_stop(float distance) {
 }
 
 void turn_right_90(float speed) {
+    motor_control_enabled ? printf("Motor control enabled\n") : printf("Motor control disabled\n");
     is_turning = true;
-    motor_control_enabled = false;
+    printf("Motor control set to disabled\n");
     float wheelbase = 9.0; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
     float turn_distance = (3.14159 * wheelbase) / 2.0; // turning radius for 90 degrees
     float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV;
     uint32_t required_pulses = (turn_distance / distance_per_pulse) / 2.0;
-
-    global_pulse_count_left = 0; // Reset pulse count
+    
+    global_pulse_count_for_turn_right = 0; // Reset pulse count
     set_motor_spd(PWM_PIN1, speed);
     set_motor_spd(PWM_PIN2, 0);
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
     gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
-    sleep_ms(1000);
+    //sleep_ms(1000);
     
     // Set directions for turn
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); // clockwise
-    gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); // anticlockwise
-    
-    while (global_pulse_count_left < (required_pulses)) {
+    //gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); // anticlockwise
+    printf("Required pulses: %ld\n", (long)required_pulses);
+    while (global_pulse_count_for_turn_right < (required_pulses)) {
         // Wait until the pulses count reaches the required amount
-        //printf("Pulses: %ld\n", (long)global_pulse_count_left);
+        printf("Pulses: %ld\n", (long)global_pulse_count_for_turn_right);
         tight_loop_contents(); // Idle while waiting
     }
     
@@ -198,7 +199,7 @@ void turn_right_90(float speed) {
     set_motor_spd(PWM_PIN1, 0);
     set_motor_spd(PWM_PIN2, 0);
     printf("Completed 90-degree turn\n");
-    motor_control_enabled = true;
+    //motor_control_enabled = true;
     is_turning = false;
     
 }
@@ -267,6 +268,7 @@ void updateDistanceTraveled() {
     float distance_per_pulse = WHEEL_CIRCUMFERENCE / PULSES_PER_REV; // in cm
     total_distance_travelled += global_pulse_count_left * distance_per_pulse; // Total distance
     global_pulse_count_left = 0; // Reset pulse count
+    
 }
 
 /* Uses the photo interrupter sensor to measure the rotational speed of the encoder
@@ -373,7 +375,7 @@ float getCm(uint trigPin, uint echoPin) {
 // PID control function for left motor
 float pid_control_left(float current_rpm_left, float dt) {
     //float Kp = 0.8, Ki = 0.1, Kd = 0.4; // PID coefficients
-    float Kp = 1.0, Ki = 0.0, Kd = 0.0;
+    float Kp = 1.0, Ki = 0.025, Kd = 0.0;
     float previous_error_left = 0.0;
     float integral_left = 0.0;
     // Convert current RPM to motor speed percentage
@@ -396,7 +398,7 @@ float pid_control_left(float current_rpm_left, float dt) {
 // PID control function for right motor
 float pid_control_right(float current_rpm_right, float dt) {
     //float Kp = 1.1, Ki = 0.1, Kd = 0.51; // PID coefficients
-    float Kp = 2.2, Ki = 0.1, Kd = 0.05;
+    float Kp = 2.4, Ki = 0.2, Kd = 0.03;
     float previous_error_right = 0.0;
     float integral_right = 0.0;
     // Convert current RPM to motor speed percentage
@@ -440,22 +442,23 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
 void motor_control_task(void *pvParameters) {
     absolute_time_t last_time = get_absolute_time();
     while (true) {
-        if (motor_control_enabled && !is_turning && !is_stopping) {
+        if (motor_control_enabled) {
             // Get current RPM from encoders (you need to implement these functions)
-        float left_rpm = getLeftWheelRPM(100);  // Example: measure left wheel RPM over 100ms
-        float right_rpm = getRightWheelRPM(100);  // Example: measure right wheel RPM over 100ms
+            float left_rpm = getLeftWheelRPM(100);  // Example: measure left wheel RPM over 100ms
+            float right_rpm = getRightWheelRPM(100);  // Example: measure right wheel RPM over 100ms
 
-        // Calculate the time difference (dt) between iterations
-        absolute_time_t current_time = get_absolute_time();
-        float dt = absolute_time_diff_us(last_time, current_time) / 1e6;  // in seconds
-        last_time = current_time;
+            // Calculate the time difference (dt) between iterations
+            absolute_time_t current_time = get_absolute_time();
+            float dt = absolute_time_diff_us(last_time, current_time) / 1e6;  // in seconds
+            last_time = current_time;
 
-        // Adjust motor speeds based on PID controller output
-        update_motor_speeds(left_rpm, right_rpm, dt);
+            // Adjust motor speeds based on PID controller output
+            update_motor_speeds(left_rpm, right_rpm, dt);
 
-        // Delay for a short time to avoid busy-waiting
-        vTaskDelay(pdMS_TO_TICKS(100));  // Adjust the delay as necessary
+            // Delay for a short time to avoid busy-waiting
+            vTaskDelay(pdMS_TO_TICKS(100));  // Adjust the delay as necessary
         } else {
+            
             continue;
             vTaskDelay(pdMS_TO_TICKS(1000));
             
@@ -468,6 +471,7 @@ void motor_control_task(void *pvParameters) {
 void ultrasonic_wheel_speed_isr(uint gpio, uint32_t events) {
     if (gpio == ROTARY_PIN_L) {
         global_pulse_count_left++;
+        global_pulse_count_for_turn_right++;
     } else if (gpio == ROTARY_PIN_R) {
         global_pulse_count_right++;
     }   else if (gpio == ULTRA_ECHO) {
@@ -534,10 +538,11 @@ void ultrasonic_task(void *pvParameters) {
             // Check if an object is detected
             if (object_detected && !is_turning) {
                 printf("[Ultrasonic] Object detected at %.2f cm\n . Turning right...\n", distance);
-                float turn_speed = pid_turn_speed(distance);
+                //float turn_speed = pid_turn_speed(distance);
                 // Call the turn_right function to initiate a right turn
-                /* turn_right(true, turn_speed); */
-                turn_right_90(50);
+                //turn_right_90(turn_speed);
+                motor_control_enabled = false;
+                turn_right_90(100);
 
                 // Reset the object_detected flag and start cooldown
                 object_detected = false;
@@ -556,8 +561,8 @@ void ultrasonic_task(void *pvParameters) {
             } else {
                 if (is_moving) {
                     set_motor_direction(is_clockwise);
-                    set_motor_spd(PWM_PIN1, 100);
-                    set_motor_spd(PWM_PIN2, 100); 
+                    set_motor_spd(PWM_PIN1, 70);
+                    set_motor_spd(PWM_PIN2, 70); 
                 }
                 if (stopped) {
                     set_motor_spd(PWM_PIN1, 0);
