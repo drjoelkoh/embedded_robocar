@@ -10,25 +10,27 @@
 #include <stdio.h>
 
 // pins for motor stuff
-#define PWM_PIN1 2
-#define PWM_PIN2 3
+#define PWM_PIN1 2  //left wheel
+#define PWM_PIN2 3  //right wheel
 #define DIR_PIN1 0
 #define DIR_PIN2 1
 #define DIR_PIN3 4
 #define DIR_PIN4 5
-#define DIR_BTN 20
-#define LOWSPD_BTN 21
-#define HISPD_BTN 22
+//#define DIR_BTN 20
+//#define LOWSPD_BTN 21
+//#define HISPD_BTN 22
 #define DEBOUNCE_DELAY_MS 100
-#define pwm_freq 500
-#define MAX_SPEED 100
-#define MAX_RPM 2400
+#define pwm_freq 1000
+//#define MAX_SPEED 100
+//#define desired_rpm 2400
 
-
+float current_speed = 0;
 bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
-float motor_speed = 100;
+float max_speed = 100;
+float desired_rpm_left = 2300;
+float desired_rpm_right = 2300;
 float prev_motor_speed = 0;
 float pwm_clock = 0;
 uint16_t wrap_value = 0;
@@ -61,8 +63,8 @@ volatile bool pulse_started = false;
 volatile uint32_t pulse_start_time = 0;
 volatile uint32_t pulse_end_time = 0;
 volatile bool object_detected = false;
-volatile bool turn_in_progress = false;
-volatile bool stopping = false;
+volatile bool is_turning = false;
+volatile bool is_stopping = false;
 volatile bool stopped = false;
 volatile bool motor_control_enabled = true;
 
@@ -94,7 +96,7 @@ void init_motor_control() {
     pwm_set_enabled(slice_num1, true); 
     pwm_set_enabled(slice_num2, true);
 
-    gpio_init(DIR_BTN); 
+   /*  gpio_init(DIR_BTN); 
     gpio_set_dir(DIR_BTN, GPIO_IN); 
     gpio_set_pulls(DIR_BTN, true, false); 
     gpio_init(LOWSPD_BTN); 
@@ -102,7 +104,7 @@ void init_motor_control() {
     gpio_set_pulls(LOWSPD_BTN, true, false); 
     gpio_init(HISPD_BTN); 
     gpio_set_dir(HISPD_BTN, GPIO_IN); 
-    gpio_set_pulls(HISPD_BTN, true, false); 
+    gpio_set_pulls(HISPD_BTN, true, false);  */
 }
 
 void set_motor_direction(bool clockwise) {
@@ -112,15 +114,18 @@ void set_motor_direction(bool clockwise) {
     
 }
 
-float convertRPMToSpeed(float rpm) {
-    return (rpm / MAX_RPM) * MAX_SPEED;
+float convertRPMToSpeed(float current_rpm, float desired_rpm) {
+    return (current_rpm / desired_rpm) * max_speed;
 }
+
+
 
 void set_motor_spd(int pin, float speed_percent) {
     if (speed_percent < 0) speed_percent = 0;
-    if (speed_percent > 100) speed_percent = 100;
+    
 
-    uint16_t duty_cycle = (uint16_t)((speed_percent / 100.0) * wrap_value); 
+    uint16_t duty_cycle = (uint16_t)((speed_percent / 100.0) * wrap_value);
+    current_speed = speed_percent;
     pwm_set_gpio_level(pin, duty_cycle);
     if (speed_percent != prev_motor_speed) {
         //printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
@@ -128,18 +133,19 @@ void set_motor_spd(int pin, float speed_percent) {
     }
 }
 
-void set_motor_rpm(int pin, float rpm) {
-    if (rpm > MAX_RPM) rpm = MAX_RPM;
+/* void set_motor_rpm(int pin, float rpm) {
+    if (rpm > desired_rpm) rpm = desired_rpm;
     float speed = convertRPMToSpeed(rpm);
     set_motor_spd(pin, speed);
-}
+} */
 
 
 
 void go_stop(float distance) {
+    is_stopping = true;
     float current_distance = total_distance_travelled;
     float stop_at = current_distance + distance;
-    printf("Current distance: %.2f cm\n, Stopping at: %.2f cm\n", current_distance, stop_at);
+    printf("Current distance: %.2f cm\n, is_stopping at: %.2f cm\n", current_distance, stop_at);
     while (total_distance_travelled < stop_at) {
         // Optionally add some sleep to prevent busy waiting
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -164,6 +170,7 @@ void go_stop(float distance) {
 }
 
 void turn_right_90(float speed) {
+    is_turning = true;
     motor_control_enabled = false;
     float wheelbase = 9.0; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
     float turn_distance = (3.14159 * wheelbase) / 2.0; // turning radius for 90 degrees
@@ -175,7 +182,7 @@ void turn_right_90(float speed) {
     set_motor_spd(PWM_PIN2, 0);
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
     gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
-    sleep_ms(500);
+    sleep_ms(1000);
     
     // Set directions for turn
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); // clockwise
@@ -192,6 +199,7 @@ void turn_right_90(float speed) {
     set_motor_spd(PWM_PIN2, 0);
     printf("Completed 90-degree turn\n");
     motor_control_enabled = true;
+    is_turning = false;
     
 }
 
@@ -207,7 +215,7 @@ void turn_right_90(float speed) {
         gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); //anticlockwise
         //set_motor_spd(PWM_PIN1, 100);
         //set_motor_spd(PWM_PIN2, 50);
-        turn_in_progress = true;
+        is_turning = true;
         printf("Turning flag is now true\n");
         turn_right_90(speed);
         
@@ -362,31 +370,98 @@ float getCm(uint trigPin, uint echoPin) {
     return distance;
 }
 
+// PID control function for left motor
+float pid_control_left(float current_rpm_left, float dt) {
+    //float Kp = 0.8, Ki = 0.1, Kd = 0.4; // PID coefficients
+    float Kp = 1.0, Ki = 0.0, Kd = 0.0;
+    float previous_error_left = 0.0;
+    float integral_left = 0.0;
+    // Convert current RPM to motor speed percentage
+    float current_speed_left = convertRPMToSpeed(current_rpm_left, desired_rpm_left);
+    
+    // Calculate error between desired and actual speed
+    float error = max_speed - current_speed_left; // We want the speed to reach max_speed
+    integral_left += error * dt;
+    float derivative = (error - previous_error_left) / dt;
 
+    // Calculate PID output
+    float output = Kp * error + Ki * integral_left + Kd * derivative;
+    previous_error_left = error;
 
-float pid_turn_speed(float current_distance) {
-    // pid controller
-    float Kp = 1.0;
-    float Ki = 0.5;
-    float Kd = 0.1;
-    float dt = 0.5;
-    float desired_distance = 10.0; // desired distance in cm
-    float prev_error = 0.0, integral = 0.0;
-    float error = desired_distance - current_distance;
-    integral += error * dt; // Accumulate error over time
-    float derivative = (error - prev_error) / dt; // Rate of change of error
-    prev_error = error; // Update for next iteration
-
-    // Apply PID formula, adjust gains as needed
-    float output = (Kp * error) + (Ki * integral) + (Kd * derivative);
-
-    // Limit output to avoid sudden changes
-    if (output > 100.0) output = 100.0;
-    if (output < 0.0) output = 0.0;
-
-    if (output < 50) output += 50; // Minimum speed to prevent stalling
+    printf("Adjusted left motor speed: %.2f\n", output);    
 
     return output;
+}
+
+// PID control function for right motor
+float pid_control_right(float current_rpm_right, float dt) {
+    //float Kp = 1.1, Ki = 0.1, Kd = 0.51; // PID coefficients
+    float Kp = 2.2, Ki = 0.1, Kd = 0.05;
+    float previous_error_right = 0.0;
+    float integral_right = 0.0;
+    // Convert current RPM to motor speed percentage
+    float current_speed_right = convertRPMToSpeed(current_rpm_right, desired_rpm_right);
+    
+    // Calculate error between desired and actual speed
+    float error = max_speed - current_speed_right; // We want the speed to reach max_speed
+    integral_right += error * dt;
+    float derivative = (error - previous_error_right) / dt;
+
+    // Calculate PID output
+    float output = Kp * error + Ki * integral_right + Kd * derivative;
+    previous_error_right = error;
+
+    printf("Adjusted right motor speed: %.2f\n", output);
+
+    return output;
+}
+
+void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
+    // Get PID outputs for both motors
+    float left_pid_output = pid_control_left(left_rpm, dt);
+    float right_pid_output = pid_control_right(right_rpm, dt);
+
+    // Convert PID output to motor speed (normalized to 0-100% range)
+    float left_motor_speed = left_pid_output;
+    float right_motor_speed = right_pid_output;
+
+    // Limit motor speed to 100%
+    if (left_motor_speed > 100) left_motor_speed = 100;
+    if (right_motor_speed > 100) right_motor_speed = 100;
+    if (left_motor_speed < 0) left_motor_speed = 0;
+    if (right_motor_speed < 0) right_motor_speed = 0;
+    //printf("New Left motor speed: %.2f, New Right motor speed: %.2f\n", left_motor_speed, right_motor_speed);
+
+    // Set motor speeds
+    set_motor_spd(PWM_PIN1, left_motor_speed);
+    set_motor_spd(PWM_PIN2, right_motor_speed);
+}
+
+void motor_control_task(void *pvParameters) {
+    absolute_time_t last_time = get_absolute_time();
+    while (true) {
+        if (motor_control_enabled && !is_turning && !is_stopping) {
+            // Get current RPM from encoders (you need to implement these functions)
+        float left_rpm = getLeftWheelRPM(100);  // Example: measure left wheel RPM over 100ms
+        float right_rpm = getRightWheelRPM(100);  // Example: measure right wheel RPM over 100ms
+
+        // Calculate the time difference (dt) between iterations
+        absolute_time_t current_time = get_absolute_time();
+        float dt = absolute_time_diff_us(last_time, current_time) / 1e6;  // in seconds
+        last_time = current_time;
+
+        // Adjust motor speeds based on PID controller output
+        update_motor_speeds(left_rpm, right_rpm, dt);
+
+        // Delay for a short time to avoid busy-waiting
+        vTaskDelay(pdMS_TO_TICKS(100));  // Adjust the delay as necessary
+        } else {
+            continue;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            
+        }
+        
+    }
 }
 
 
@@ -421,6 +496,30 @@ void send_trigger_pulse() {
     sleep_us(10); // Pulse duration
     gpio_put(ULTRA_TRIG, 0);
 }
+float pid_turn_speed(float current_distance) {
+    // pid controller
+    float Kp = 1.0;
+    float Ki = 0.5;
+    float Kd = 0.1;
+    float dt = 0.5;
+    float desired_distance = 10.0; // desired distance in cm
+    float prev_error = 0.0, integral = 0.0;
+    float error = desired_distance - current_distance;
+    integral += error * dt; // Accumulate error over time
+    float derivative = (error - prev_error) / dt; // Rate of change of error
+    prev_error = error; // Update for next iteration
+
+    // Apply PID formula, adjust gains as needed
+    float output = (Kp * error) + (Ki * integral) + (Kd * derivative);
+
+    // Limit output to avoid sudden changes
+    if (output > 100.0) output = 100.0;
+    if (output < 0.0) output = 0.0;
+
+    if (output < 50) output += 50; // Minimum speed to prevent stalling
+
+    return output;
+}
 
 // Task to monitor distance and turn if necessary
 void ultrasonic_task(void *pvParameters) {
@@ -433,23 +532,23 @@ void ultrasonic_task(void *pvParameters) {
             xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
 
             // Check if an object is detected
-            if (object_detected && !turn_in_progress) {
+            if (object_detected && !is_turning) {
                 printf("[Ultrasonic] Object detected at %.2f cm\n . Turning right...\n", distance);
                 float turn_speed = pid_turn_speed(distance);
                 // Call the turn_right function to initiate a right turn
                 /* turn_right(true, turn_speed); */
-                turn_right_90(turn_speed);
+                turn_right_90(50);
 
                 // Reset the object_detected flag and start cooldown
                 object_detected = false;
-                turn_in_progress = false;
+                is_turning = false;
                 printf("Turning flag is now false\n");
                 in_cooldown = true;
                 set_motor_direction(is_clockwise);
                 set_motor_spd(PWM_PIN1, 100);
                 set_motor_spd(PWM_PIN2, 100); 
                 go_stop(90.0);
-                stopping = true;
+                is_stopping = true;
                 // Delay to prevent immediate re-triggering
                 vTaskDelay(pdMS_TO_TICKS(2000));  // Adjust the delay as needed
                 printf("Cooldown period started\n");
@@ -464,10 +563,7 @@ void ultrasonic_task(void *pvParameters) {
                     set_motor_spd(PWM_PIN1, 0);
                     set_motor_spd(PWM_PIN2, 0);
                 }
-                // If no object is detected, continue moving forward
-                /* set_motor_direction(is_clockwise);
-                set_motor_spd(PWM_PIN1, 100);
-                set_motor_spd(PWM_PIN2, 100);  */
+                
                 
             }
         } else {
@@ -550,6 +646,7 @@ int main() {
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
+    xTaskCreate(motor_control_task, "Motor Control Task", 512, NULL, 1, NULL);
     
     //xTaskCreate(pid_speed_balancer, "PID Speed Balancer Task", 512, NULL, 1, NULL);
 
