@@ -179,6 +179,9 @@ void turn_right_90(float speed) {
     uint32_t required_pulses = (turn_distance / distance_per_pulse) / 2.0;
     
     global_pulse_count_for_turn_right = 0; // Reset pulse count
+    gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
+    gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
+    sleep_ms(1000);
     set_motor_spd(PWM_PIN1, speed);
     set_motor_spd(PWM_PIN2, 0);
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
