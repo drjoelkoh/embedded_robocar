@@ -173,7 +173,7 @@ void turn_right_90(float speed) {
     motor_control_enabled ? printf("Motor control enabled\n") : printf("Motor control disabled\n");
     is_turning = true;
     printf("Motor control set to disabled\n");
-    float wheelbase = 9.0; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
+    float wheelbase = 6.5; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
     float turn_distance = (3.14159 * wheelbase) / 2.0; // turning radius for 90 degrees
     float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV;
     uint32_t required_pulses = (turn_distance / distance_per_pulse) / 2.0;
@@ -183,14 +183,14 @@ void turn_right_90(float speed) {
     gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
     sleep_ms(1000);
     set_motor_spd(PWM_PIN1, speed);
-    set_motor_spd(PWM_PIN2, 0);
+    set_motor_spd(PWM_PIN2, speed);
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
     gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
     //sleep_ms(1000);
     
     // Set directions for turn
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); // clockwise
-    //gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); // anticlockwise
+    gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); // anticlockwise
     printf("Required pulses: %ld\n", (long)required_pulses);
     while (global_pulse_count_for_turn_right < (required_pulses)) {
         // Wait until the pulses count reaches the required amount
