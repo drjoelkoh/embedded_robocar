@@ -58,7 +58,7 @@ absolute_time_t last_pulse_time_right;
 float last_printed_distance = -1.0;
 float total_distance_travelled = 0.0;
 
-#define DESIRED_DISTANCE 20.0 // Distance threshold in cm for object detection
+#define DESIRED_DISTANCE 17.0 // Distance threshold in cm for object detection
 volatile bool pulse_started = false;
 volatile uint32_t pulse_start_time = 0;
 volatile uint32_t pulse_end_time = 0;
@@ -142,6 +142,7 @@ void set_motor_spd(int pin, float speed_percent) {
 
 
 void go_stop(float distance) {
+
     is_stopping = true;
     float current_distance = total_distance_travelled;
     float stop_at = current_distance + distance;
@@ -173,7 +174,7 @@ void turn_right_90(float speed) {
     motor_control_enabled ? printf("Motor control enabled\n") : printf("Motor control disabled\n");
     is_turning = true;
     printf("Motor control set to disabled\n");
-    float wheelbase = 6.5; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
+    float wheelbase = 6.3; // in cm. THis is the distance of the front wheel to the rear wheel axel. I need this to turn 90 degrees
     float turn_distance = (3.14159 * wheelbase) / 2.0; // turning radius for 90 degrees
     float distance_per_pulse = ENCODER_CIRCUMFERENCE / PULSES_PER_REV;
     uint32_t required_pulses = (turn_distance / distance_per_pulse) / 2.0;
@@ -553,8 +554,8 @@ void ultrasonic_task(void *pvParameters) {
                 printf("Turning flag is now false\n");
                 in_cooldown = true;
                 set_motor_direction(is_clockwise);
-                set_motor_spd(PWM_PIN1, 100);
-                set_motor_spd(PWM_PIN2, 100); 
+                set_motor_spd(PWM_PIN1, 70);
+                set_motor_spd(PWM_PIN2, 71); 
                 go_stop(90.0);
                 is_stopping = true;
                 // Delay to prevent immediate re-triggering
