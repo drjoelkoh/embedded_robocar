@@ -10,8 +10,8 @@
 #include <stdio.h>
 
 // pins for motor stuff
-#define PWM_PIN1 2  //left wheel
-#define PWM_PIN2 3  //right wheel
+#define LEFT_MOTOR_PIN 2  //left wheel
+#define RIGHT_MOTOR_PIN 3  //right wheel
 #define DIR_PIN1 0
 #define DIR_PIN2 1
 #define DIR_PIN3 4
@@ -28,6 +28,7 @@ float current_speed = 0;
 bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
+bool line_following_mode = false;
 float max_speed = 70; //target
 float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
@@ -40,7 +41,7 @@ MessageBufferHandle_t objectDistanceMessageBuffer;
 MessageBufferHandle_t leftWheelSpeedMessageBuffer;
 MessageBufferHandle_t rightWheelSpeedMessageBuffer;
 
-//ultrasonic and ir sensor stuff
+//ultrasonic and wheel encoder stuff
 #define ULTRA_TRIG 7
 #define ULTRA_ECHO 6
 #define ROTARY_PIN_L 9 // not needed now rmb to change pin number
@@ -68,6 +69,11 @@ volatile bool is_stopping = false;
 volatile bool stopped = false;
 volatile bool motor_control_enabled = true;
 
+//IR sensor stuff
+#define IR_SENSOR_PIN_L 26
+#define IR_SENSOR_PIN_R 27
+#define line_follow_toggle_btn 20
+
 
 // initialize GPIO and PWM
 void init_motor_control() {
@@ -78,10 +84,10 @@ void init_motor_control() {
     gpio_init(DIR_PIN4); gpio_set_dir(DIR_PIN4, GPIO_OUT);
 
     // PWM
-    gpio_set_function(PWM_PIN1, GPIO_FUNC_PWM);
-    gpio_set_function(PWM_PIN2, GPIO_FUNC_PWM);
-    uint slice_num1 = pwm_gpio_to_slice_num(PWM_PIN1);
-    uint slice_num2 = pwm_gpio_to_slice_num(PWM_PIN2);
+    gpio_set_function(LEFT_MOTOR_PIN, GPIO_FUNC_PWM);
+    gpio_set_function(RIGHT_MOTOR_PIN, GPIO_FUNC_PWM);
+    uint slice_num1 = pwm_gpio_to_slice_num(LEFT_MOTOR_PIN);
+    uint slice_num2 = pwm_gpio_to_slice_num(RIGHT_MOTOR_PIN);
 
     pwm_clock = (float)clock_get_hz(clk_sys) / 64.0f;
     /* wrap_value = (uint16_t)(pwm_clock / pwm_freq) - 1; */
@@ -112,6 +118,14 @@ void set_motor_direction(bool clockwise) {
     gpio_put(DIR_PIN3, !clockwise); gpio_put(DIR_PIN4, clockwise);
     //printf("Direction set to %s\n", clockwise ? "Clockwise" : "Counterclockwise");
     
+}
+
+void set_left_motor_direction(bool clockwise) {
+    gpio_put(DIR_PIN1, !clockwise); gpio_put(DIR_PIN2, clockwise);
+}
+
+void set_right_motor_direction(bool clockwise) {
+    gpio_put(DIR_PIN3, !clockwise); gpio_put(DIR_PIN4, clockwise);
 }
 
 float convertRPMToSpeed(float current_rpm, float desired_rpm) {
@@ -151,16 +165,16 @@ void go_stop(float distance) {
         // Optionally add some sleep to prevent busy waiting
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    set_motor_spd(PWM_PIN1, 0);
-    set_motor_spd(PWM_PIN2, 0);
+    set_motor_spd(LEFT_MOTOR_PIN, 0);
+    set_motor_spd(RIGHT_MOTOR_PIN, 0);
     is_moving = false;
     motor_control_enabled = false;
     stopped = true;
     printf("Stopped at %.2f cm\n", total_distance_travelled);
     /* while (true) {
         if (total_distance_travelled >= stop_at) {
-            set_motor_spd(PWM_PIN1, 0);
-            set_motor_spd(PWM_PIN2, 0);
+            set_motor_spd(LEFT_MOTOR_PIN, 0);
+            set_motor_spd(RIGHT_MOTOR_PIN, 0);
             is_moving = false;
             motor_control_enabled = false;
             stopped = true;
@@ -183,8 +197,8 @@ void turn_right_90(float speed) {
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
     gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
     sleep_ms(1000);
-    set_motor_spd(PWM_PIN1, speed);
-    set_motor_spd(PWM_PIN2, speed);
+    set_motor_spd(LEFT_MOTOR_PIN, speed);
+    set_motor_spd(RIGHT_MOTOR_PIN, speed);
     gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
     gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
     //sleep_ms(1000);
@@ -200,8 +214,8 @@ void turn_right_90(float speed) {
     }
     
     // Stop motors after turn
-    set_motor_spd(PWM_PIN1, 0);
-    set_motor_spd(PWM_PIN2, 0);
+    set_motor_spd(LEFT_MOTOR_PIN, 0);
+    set_motor_spd(RIGHT_MOTOR_PIN, 0);
     printf("Completed 90-degree turn\n");
     //motor_control_enabled = true;
     is_turning = false;
@@ -214,12 +228,12 @@ void turn_right_90(float speed) {
         gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
         sleep_ms(300);
         printf("Turning right\n");
-        set_motor_spd(PWM_PIN1, speed);
-        set_motor_spd(PWM_PIN2, 0);
+        set_motor_spd(LEFT_MOTOR_PIN, speed);
+        set_motor_spd(RIGHT_MOTOR_PIN, 0);
         gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); //clockwise
         gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); //anticlockwise
-        //set_motor_spd(PWM_PIN1, 100);
-        //set_motor_spd(PWM_PIN2, 50);
+        //set_motor_spd(LEFT_MOTOR_PIN, 100);
+        //set_motor_spd(RIGHT_MOTOR_PIN, 50);
         is_turning = true;
         printf("Turning flag is now true\n");
         turn_right_90(speed);
@@ -228,8 +242,8 @@ void turn_right_90(float speed) {
     else {
         
         set_motor_direction(is_clockwise);
-        set_motor_spd(PWM_PIN1, 100);
-        set_motor_spd(PWM_PIN2, 100);
+        set_motor_spd(LEFT_MOTOR_PIN, 100);
+        set_motor_spd(RIGHT_MOTOR_PIN, 100);
     }   
 } */
 
@@ -241,13 +255,13 @@ void turn_right_90(float speed) {
         if (xMessageBufferReceive(speedMessageBuffer, &msg, sizeof(msg), portMAX_DELAY)) {
             if (msg == LOWSPD_BTN) {
                 motor_speed = 50; // Change speed as desired
-                set_motor_spd(PWM_PIN1, motor_speed);
-                set_motor_spd(PWM_PIN2, motor_speed);
+                set_motor_spd(LEFT_MOTOR_PIN, motor_speed);
+                set_motor_spd(RIGHT_MOTOR_PIN, motor_speed);
                 printf("[Motor] Speed set to LOW%%\n"); // Update log message
             } else if (msg == HISPD_BTN) {
                 motor_speed = 100;
-                set_motor_spd(PWM_PIN1, motor_speed);
-                set_motor_spd(PWM_PIN2, motor_speed);
+                set_motor_spd(LEFT_MOTOR_PIN, motor_speed);
+                set_motor_spd(RIGHT_MOTOR_PIN, motor_speed);
                 printf("[Motor] Speed set to HIGH%%\n");
             }
         }
@@ -439,8 +453,8 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
     //printf("New Left motor speed: %.2f, New Right motor speed: %.2f\n", left_motor_speed, right_motor_speed);
 
     // Set motor speeds
-    set_motor_spd(PWM_PIN1, left_motor_speed);
-    set_motor_spd(PWM_PIN2, right_motor_speed);
+    set_motor_spd(LEFT_MOTOR_PIN, left_motor_speed);
+    set_motor_spd(RIGHT_MOTOR_PIN, right_motor_speed);
 }
 
 void motor_control_task(void *pvParameters) {
@@ -554,8 +568,8 @@ void ultrasonic_task(void *pvParameters) {
                 printf("Turning flag is now false\n");
                 in_cooldown = true;
                 set_motor_direction(is_clockwise);
-                set_motor_spd(PWM_PIN1, 70);
-                set_motor_spd(PWM_PIN2, 71); 
+                set_motor_spd(LEFT_MOTOR_PIN, 70);
+                set_motor_spd(RIGHT_MOTOR_PIN, 71); 
                 go_stop(90.0);
                 is_stopping = true;
                 // Delay to prevent immediate re-triggering
@@ -565,12 +579,12 @@ void ultrasonic_task(void *pvParameters) {
             } else {
                 if (is_moving) {
                     set_motor_direction(is_clockwise);
-                    set_motor_spd(PWM_PIN1, 70);
-                    set_motor_spd(PWM_PIN2, 70); 
+                    set_motor_spd(LEFT_MOTOR_PIN, 70);
+                    set_motor_spd(RIGHT_MOTOR_PIN, 70); 
                 }
                 if (stopped) {
-                    set_motor_spd(PWM_PIN1, 0);
-                    set_motor_spd(PWM_PIN2, 0);
+                    set_motor_spd(LEFT_MOTOR_PIN, 0);
+                    set_motor_spd(RIGHT_MOTOR_PIN, 0);
                 }
                 
                 
@@ -602,12 +616,70 @@ void print_dist_task(void *pvParameters) {
     }
 }
 
+void turn_right() {
+    set_left_motor_direction(is_clockwise);
+    set_right_motor_direction(!is_clockwise);
+    set_motor_spd(LEFT_MOTOR_PIN, 60);
+    set_motor_spd(RIGHT_MOTOR_PIN, 60);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+void ir_sensor_init() {
+    gpio_init(IR_SENSOR_PIN_L);
+    gpio_set_dir(IR_SENSOR_PIN_L, GPIO_IN);
+    gpio_pull_down(IR_SENSOR_PIN_L);
+
+    gpio_init(line_follow_toggle_btn);
+    gpio_set_dir(line_follow_toggle_btn, GPIO_IN);
+    gpio_pull_down(line_follow_toggle_btn);
+}
+
+void line_following_task(void *pvParameters) {
+    while (true) {
+        if (gpio_get(line_follow_toggle_btn) == 0) {
+            line_following_mode = !line_following_mode;
+            //printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        if (line_following_mode) {
+            if (gpio_get(IR_SENSOR_PIN_L)==0 && gpio_get(IR_SENSOR_PIN_R)==0) {
+                printf("Moving forward\n");
+                set_motor_direction(is_clockwise);
+                set_motor_spd(LEFT_MOTOR_PIN, 100);
+                set_motor_spd(RIGHT_MOTOR_PIN, 100);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            else if (gpio_get(IR_SENSOR_PIN_L)==1 && gpio_get(IR_SENSOR_PIN_R)==0) {
+                printf("Turning right\n");
+                turn_right();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            else if (gpio_get(IR_SENSOR_PIN_L)==0 && gpio_get(IR_SENSOR_PIN_R)==1) {
+                printf("Turning left\n");
+                set_motor_direction(is_clockwise);
+                set_motor_spd(LEFT_MOTOR_PIN, 100);
+                set_motor_spd(RIGHT_MOTOR_PIN, 70);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            else if (gpio_get(IR_SENSOR_PIN_L)==1 && gpio_get(IR_SENSOR_PIN_R)==1) {
+                printf("Stopped\n");
+                set_motor_spd(LEFT_MOTOR_PIN, 0);
+                set_motor_spd(RIGHT_MOTOR_PIN, 0);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 // Main function
 int main() {
     stdio_init_all();
     init_motor_control();
     ultSonicPinInit();
     encoderPinInit();
+    ir_sensor_init();
 
     // Create message buffers for direction and speed
     directionMessageBuffer = xMessageBufferCreate(64);
@@ -656,7 +728,7 @@ int main() {
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(motor_control_task, "Motor Control Task", 512, NULL, 1, NULL);
-    
+    xTaskCreate(line_following_task, "Line Following Task", 512, NULL, 1, NULL);
     //xTaskCreate(pid_speed_balancer, "PID Speed Balancer Task", 512, NULL, 1, NULL);
 
     vTaskStartScheduler();
