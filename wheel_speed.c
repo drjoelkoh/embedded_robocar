@@ -43,7 +43,7 @@ MessageBufferHandle_t rightWheelSpeedMessageBuffer;
 //ultrasonic and ir sensor stuff
 #define ULTRA_TRIG 7
 #define ULTRA_ECHO 6
-#define ROTARY_PIN_L 16 // not needed now rmb to change pin number
+#define ROTARY_PIN_L 9 // not needed now rmb to change pin number
 #define ROTARY_PIN_R 8
 #define WHEEL_CIRCUMFERENCE 21.0 // in cm
 #define ENCODER_CIRCUMFERENCE 9.0 // in cm
@@ -379,7 +379,7 @@ float getCm(uint trigPin, uint echoPin) {
 // PID control function for left motor
 float pid_control_left(float current_rpm_left, float dt) {
     //float Kp = 0.8, Ki = 0.1, Kd = 0.4; // PID coefficients
-    float Kp = 1.0, Ki = 0.025, Kd = 0.0;
+    float Kp = 1.0, Ki = 0.4, Kd = 0;
     float previous_error_left = 0.0;
     float integral_left = 0.0;
     // Convert current RPM to motor speed percentage
@@ -402,7 +402,7 @@ float pid_control_left(float current_rpm_left, float dt) {
 // PID control function for right motor
 float pid_control_right(float current_rpm_right, float dt) {
     //float Kp = 1.1, Ki = 0.1, Kd = 0.51; // PID coefficients
-    float Kp = 2.4, Ki = 0.2, Kd = 0.03;
+    float Kp = 2.6, Ki = 0.01, Kd = 0.035;
     float previous_error_right = 0.0;
     float integral_right = 0.0;
     // Convert current RPM to motor speed percentage
