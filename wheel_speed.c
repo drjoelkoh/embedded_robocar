@@ -655,16 +655,16 @@ void print_dist_task(void *pvParameters) {
 void turn_right() {
     set_left_motor_direction(is_clockwise);
     set_right_motor_direction(!is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 50);
-    set_motor_spd(RIGHT_MOTOR_PIN, 50);
+    set_motor_spd(LEFT_MOTOR_PIN, 60);
+    set_motor_spd(RIGHT_MOTOR_PIN, 60);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 void turn_left() {
     set_left_motor_direction(!is_clockwise);
     set_right_motor_direction(is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 50);
-    set_motor_spd(RIGHT_MOTOR_PIN, 50);
+    set_motor_spd(LEFT_MOTOR_PIN, 60);
+    set_motor_spd(RIGHT_MOTOR_PIN, 60);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
@@ -690,11 +690,17 @@ void line_following_task(void *pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         if (line_following_mode) {
+            if (gpio_get(IR_SENSOR_PIN_L)==1 && gpio_get(IR_SENSOR_PIN_R)==1) {
+                printf("Stopped\n");
+                set_left_motor_spd(0);
+                set_right_motor_spd(0);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
             if (gpio_get(IR_SENSOR_PIN_R)==0) {
                 printf("Left sensor: %d, Right sensor: %d\n, Moving forward", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
                 set_motor_direction(is_clockwise);
-                set_motor_spd(LEFT_MOTOR_PIN, 50);
-                set_motor_spd(RIGHT_MOTOR_PIN, 50);
+                set_motor_spd(LEFT_MOTOR_PIN, 60);
+                set_motor_spd(RIGHT_MOTOR_PIN, 60);
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             else if (gpio_get(IR_SENSOR_PIN_R)==1) {
@@ -702,12 +708,7 @@ void line_following_task(void *pvParameters) {
                 turn_left();
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
-            else if (gpio_get(IR_SENSOR_PIN_L)==1 && gpio_get(IR_SENSOR_PIN_R)==1) {
-                printf("Stopped\n");
-                set_left_motor_spd(0);
-                set_right_motor_spd(0);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
+            
         }
         
         vTaskDelay(pdMS_TO_TICKS(100));
