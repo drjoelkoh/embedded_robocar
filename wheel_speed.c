@@ -537,6 +537,7 @@ void ultrasonic_wheel_speed_isr(uint gpio, uint32_t events) {
             if (distance <= DESIRED_DISTANCE && distance > 1.0) {
                 object_detected = true;
             }
+            xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
         }
 
     }
@@ -549,41 +550,62 @@ void send_trigger_pulse() {
     sleep_us(10); // Pulse duration
     gpio_put(ULTRA_TRIG, 0);
 }
+float pid_turn_speed(float current_distance) {
+    // pid controller
+    float Kp = 1.0;
+    float Ki = 0.5;
+    float Kd = 0.1;
+    float dt = 0.5;
+    float desired_distance = 10.0; // desired distance in cm
+    float prev_error = 0.0, integral = 0.0;
+    float error = desired_distance - current_distance;
+    integral += error * dt; // Accumulate error over time
+    float derivative = (error - prev_error) / dt; // Rate of change of error
+    prev_error = error; // Update for next iteration
 
+    // Apply PID formula, adjust gains as needed
+    float output = (Kp * error) + (Ki * integral) + (Kd * derivative);
+
+    // Limit output to avoid sudden changes
+    if (output > 100.0) output = 100.0;
+    if (output < 0.0) output = 0.0;
+
+    if (output < 50) output += 50; // Minimum speed to prevent stalling
+
+    return output;
+}
 
 // Task to monitor distance and turn if necessary
 void ultrasonic_task(void *pvParameters) {
     bool in_cooldown = false;
 
     while (true) {
-        if (!in_cooldown && !stopped) {
+        if (!in_cooldown && !stopped && !line_following_mode) {
             // Send a trigger pulse
             float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
-            xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
+            //xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
 
             // Check if an object is detected
-            if (object_detected && !is_turning) {
-                printf("[Ultrasonic] Object detected at %.2f cm\n . Turning right...\n", distance);
-                //float turn_speed = pid_turn_speed(distance);
-                // Call the turn_right function to initiate a right turn
-                //turn_right_90(turn_speed);
+            if (object_detected && !is_turning ) {
+                printf("[Ultrasonic] Object detected at %.2f cm\n" , distance);
+                
                 motor_control_enabled = false;
-                turn_right_90(100);
+                //turn_right_90(100);
 
                 // Reset the object_detected flag and start cooldown
                 object_detected = false;
-                is_turning = false;
-                printf("Turning flag is now false\n");
+                //is_turning = false;
+                //printf("Turning flag is now false\n");
                 in_cooldown = true;
                 set_motor_direction(is_clockwise);
                 set_left_motor_spd(70);
                 set_right_motor_spd(70);
                 //set_motor_spd(LEFT_MOTOR_PIN, 70);
                 //set_motor_spd(RIGHT_MOTOR_PIN, 71); 
-                go_stop(90.0);
-                is_stopping = true;
+                //go_stop(90.0);
+                //is_stopping = true;
                 // Delay to prevent immediate re-triggering
-                vTaskDelay(pdMS_TO_TICKS(2000));  // Adjust the delay as needed
+                vTaskDelay(pdMS_TO_TICKS(500));  // Adjust the delay as needed
                 printf("Cooldown period started\n");
 
             } else {
@@ -605,11 +627,10 @@ void ultrasonic_task(void *pvParameters) {
             }
         } else {
             // Cooldown period to avoid continuous triggering
-            vTaskDelay(pdMS_TO_TICKS(1000));  // Cooldown duration
+            vTaskDelay(pdMS_TO_TICKS(500));  // Cooldown duration
             in_cooldown = false;
         }
-
-        
+    
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -623,9 +644,10 @@ void print_dist_task(void *pvParameters) {
         if (xMessageBufferReceive(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY) > 0) {
             // Check if the distance is different from the last printed value
             if (distance != last_printed_distance) {
-                printf("[Ultrasonic] Distance from detected object: %.2f cm\n", distance);
-                last_printed_distance = distance; // Update last printed distance
+                //printf("[Ultrasonic] Distance from object: %.2f cm\n", distance);
+                last_printed_distance = distance;
             }
+            
         }
     }
 }
@@ -651,6 +673,10 @@ void ir_sensor_init() {
     gpio_set_dir(IR_SENSOR_PIN_L, GPIO_IN);
     gpio_pull_down(IR_SENSOR_PIN_L);
 
+    gpio_init(IR_SENSOR_PIN_R);
+    gpio_set_dir(IR_SENSOR_PIN_R, GPIO_IN);
+    gpio_pull_down(IR_SENSOR_PIN_R);
+
     gpio_init(line_follow_toggle_btn);
     gpio_set_dir(line_follow_toggle_btn, GPIO_IN);
     gpio_pull_down(line_follow_toggle_btn);
@@ -660,25 +686,24 @@ void line_following_task(void *pvParameters) {
     while (true) {
         if (gpio_get(line_follow_toggle_btn) == 0) {
             line_following_mode = !line_following_mode;
-            //printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
+            printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         if (line_following_mode) {
-            // 0 is black, 1 is white
             if (gpio_get(IR_SENSOR_PIN_L)==0 && gpio_get(IR_SENSOR_PIN_R)==0) {
-                printf("Moving forward\n");
+                printf("Left sensor: %d, Right sensor: %d\n, Moving forward", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
                 set_motor_direction(is_clockwise);
-                set_motor_spd(LEFT_MOTOR_PIN, 100);
-                set_motor_spd(RIGHT_MOTOR_PIN, 100);
+                set_motor_spd(LEFT_MOTOR_PIN, 60);
+                set_motor_spd(RIGHT_MOTOR_PIN, 60);
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             else if (gpio_get(IR_SENSOR_PIN_L)==1 && gpio_get(IR_SENSOR_PIN_R)==0) {
-                printf("Turning right\n");
+                printf("Left sensor: %d, Right sensor: %d\n, Turning right", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
                 turn_right();
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             else if (gpio_get(IR_SENSOR_PIN_L)==0 && gpio_get(IR_SENSOR_PIN_R)==1) {
-                printf("Turning left\n");
+                printf("Left sensor: %d, Right sensor: %d\n, Turning left", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
                 turn_left();
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
@@ -701,8 +726,6 @@ int main() {
     ultSonicPinInit();
     encoderPinInit();
     ir_sensor_init();
-    set_left_motor_spd(70);
-    set_right_motor_spd(70);
 
     // Create message buffers for direction and speed
     directionMessageBuffer = xMessageBufferCreate(64);
@@ -746,7 +769,7 @@ int main() {
 
     /* xTaskCreate(direction_task, "Direction Task", 512, NULL, 1, NULL);
     xTaskCreate(speed_task, "Speed Task", 512, NULL, 1, NULL); */
-    //xTaskCreate(ultrasonic_task, "Ultrasonic Task", 512, NULL, 1, NULL); //No longer needed. Only for week 10 demo
+    xTaskCreate(ultrasonic_task, "Ultrasonic Task", 512, NULL, 1, NULL);
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
