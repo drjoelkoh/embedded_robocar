@@ -655,16 +655,16 @@ void print_dist_task(void *pvParameters) {
 void turn_right() {
     set_left_motor_direction(is_clockwise);
     set_right_motor_direction(!is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 60);
-    set_motor_spd(RIGHT_MOTOR_PIN, 60);
+    set_motor_spd(LEFT_MOTOR_PIN, 50);
+    set_motor_spd(RIGHT_MOTOR_PIN, 50);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 void turn_left() {
     set_left_motor_direction(!is_clockwise);
     set_right_motor_direction(is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 60);
-    set_motor_spd(RIGHT_MOTOR_PIN, 60);
+    set_motor_spd(LEFT_MOTOR_PIN, 50);
+    set_motor_spd(RIGHT_MOTOR_PIN, 50);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
@@ -690,19 +690,14 @@ void line_following_task(void *pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         if (line_following_mode) {
-            if (gpio_get(IR_SENSOR_PIN_L)==0 && gpio_get(IR_SENSOR_PIN_R)==0) {
+            if (gpio_get(IR_SENSOR_PIN_R)==0) {
                 printf("Left sensor: %d, Right sensor: %d\n, Moving forward", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
                 set_motor_direction(is_clockwise);
-                set_motor_spd(LEFT_MOTOR_PIN, 60);
-                set_motor_spd(RIGHT_MOTOR_PIN, 60);
+                set_motor_spd(LEFT_MOTOR_PIN, 50);
+                set_motor_spd(RIGHT_MOTOR_PIN, 50);
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
-            else if (gpio_get(IR_SENSOR_PIN_L)==1 && gpio_get(IR_SENSOR_PIN_R)==0) {
-                printf("Left sensor: %d, Right sensor: %d\n, Turning right", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
-                turn_right();
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
-            else if (gpio_get(IR_SENSOR_PIN_L)==0 && gpio_get(IR_SENSOR_PIN_R)==1) {
+            else if (gpio_get(IR_SENSOR_PIN_R)==1) {
                 printf("Left sensor: %d, Right sensor: %d\n, Turning left", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
                 turn_left();
                 vTaskDelay(pdMS_TO_TICKS(1000));
