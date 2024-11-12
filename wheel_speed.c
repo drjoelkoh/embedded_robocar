@@ -655,16 +655,25 @@ void print_dist_task(void *pvParameters) {
 void turn_right() {
     set_left_motor_direction(is_clockwise);
     set_right_motor_direction(!is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 60);
-    set_motor_spd(RIGHT_MOTOR_PIN, 60);
+    set_motor_spd(LEFT_MOTOR_PIN, 50);
+    set_motor_spd(RIGHT_MOTOR_PIN, 50);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 void turn_left() {
     set_left_motor_direction(!is_clockwise);
     set_right_motor_direction(is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 60);
-    set_motor_spd(RIGHT_MOTOR_PIN, 60);
+    set_motor_spd(LEFT_MOTOR_PIN, 50);
+    set_motor_spd(RIGHT_MOTOR_PIN, 50);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+void stop () {
+    set_left_motor_spd(0);
+    set_right_motor_spd(0);
+    stopped = true;
+    //set_motor_spd(LEFT_MOTOR_PIN, 0);
+    //set_motor_spd(RIGHT_MOTOR_PIN, 0);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
@@ -689,18 +698,19 @@ void line_following_task(void *pvParameters) {
             printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
-        if (line_following_mode) {
+        if (line_following_mode && !stopped) {
             if (gpio_get(IR_SENSOR_PIN_L)==1 && gpio_get(IR_SENSOR_PIN_R)==1) {
-                printf("Stopped\n");
-                set_left_motor_spd(0);
-                set_right_motor_spd(0);
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                printf("Left sensor: %d, Right sensor: %d\n, Stopped", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
+                stop();
+                float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
+                printf("Distance from object: %.2f cm\n", distance);
+                vTaskSuspend(NULL);
             }
             if (gpio_get(IR_SENSOR_PIN_R)==0) {
                 printf("Left sensor: %d, Right sensor: %d\n, Moving forward", gpio_get(IR_SENSOR_PIN_L), gpio_get(IR_SENSOR_PIN_R));
                 set_motor_direction(is_clockwise);
-                set_motor_spd(LEFT_MOTOR_PIN, 60);
-                set_motor_spd(RIGHT_MOTOR_PIN, 60);
+                set_motor_spd(LEFT_MOTOR_PIN, 50);
+                set_motor_spd(RIGHT_MOTOR_PIN, 50);
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             else if (gpio_get(IR_SENSOR_PIN_R)==1) {
