@@ -549,30 +549,7 @@ void send_trigger_pulse() {
     sleep_us(10); // Pulse duration
     gpio_put(ULTRA_TRIG, 0);
 }
-float pid_turn_speed(float current_distance) {
-    // pid controller
-    float Kp = 1.0;
-    float Ki = 0.5;
-    float Kd = 0.1;
-    float dt = 0.5;
-    float desired_distance = 10.0; // desired distance in cm
-    float prev_error = 0.0, integral = 0.0;
-    float error = desired_distance - current_distance;
-    integral += error * dt; // Accumulate error over time
-    float derivative = (error - prev_error) / dt; // Rate of change of error
-    prev_error = error; // Update for next iteration
 
-    // Apply PID formula, adjust gains as needed
-    float output = (Kp * error) + (Ki * integral) + (Kd * derivative);
-
-    // Limit output to avoid sudden changes
-    if (output > 100.0) output = 100.0;
-    if (output < 0.0) output = 0.0;
-
-    if (output < 50) output += 50; // Minimum speed to prevent stalling
-
-    return output;
-}
 
 // Task to monitor distance and turn if necessary
 void ultrasonic_task(void *pvParameters) {
@@ -646,7 +623,7 @@ void print_dist_task(void *pvParameters) {
         if (xMessageBufferReceive(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY) > 0) {
             // Check if the distance is different from the last printed value
             if (distance != last_printed_distance) {
-                //printf("[Ultrasonic] Distance from object: %.2f cm\n", distance);
+                printf("[Ultrasonic] Distance from detected object: %.2f cm\n", distance);
                 last_printed_distance = distance; // Update last printed distance
             }
         }
@@ -687,6 +664,7 @@ void line_following_task(void *pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         if (line_following_mode) {
+            // 0 is black, 1 is white
             if (gpio_get(IR_SENSOR_PIN_L)==0 && gpio_get(IR_SENSOR_PIN_R)==0) {
                 printf("Moving forward\n");
                 set_motor_direction(is_clockwise);
@@ -723,6 +701,8 @@ int main() {
     ultSonicPinInit();
     encoderPinInit();
     ir_sensor_init();
+    set_left_motor_spd(70);
+    set_right_motor_spd(70);
 
     // Create message buffers for direction and speed
     directionMessageBuffer = xMessageBufferCreate(64);
@@ -766,7 +746,7 @@ int main() {
 
     /* xTaskCreate(direction_task, "Direction Task", 512, NULL, 1, NULL);
     xTaskCreate(speed_task, "Speed Task", 512, NULL, 1, NULL); */
-    xTaskCreate(ultrasonic_task, "Ultrasonic Task", 512, NULL, 1, NULL);
+    //xTaskCreate(ultrasonic_task, "Ultrasonic Task", 512, NULL, 1, NULL); //No longer needed. Only for week 10 demo
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
