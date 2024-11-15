@@ -1,3 +1,11 @@
+#include <string.h>
+#include <stdlib.h>
+#include "lwip/pbuf.h"
+#include "lwip/tcp.h"
+#include "lwip/netif.h"
+#include "lwip/ip_addr.h"
+#include "lwip/dhcp.h"
+#include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/irq.h"
@@ -8,6 +16,31 @@
 #include "task.h"
 #include "message_buffer.h"
 #include <stdio.h>
+
+
+//Wifi stuff
+#define TCP_PORT 4242
+#define BUF_SIZE 2048
+
+// Define a message buffer structure to store different types of accelerometer commands
+/* typedef struct {
+    char turnleft[BUF_SIZE];  // Buffer to store "turn left"
+    char turnright[BUF_SIZE]; // Buffer to store "turn right"
+    char forward[BUF_SIZE];   // Buffer to store "move forward"
+    char backward[BUF_SIZE];  // Buffer to store "move backward"
+    char stop[BUF_SIZE];      // Buffer to store "stop"
+} DirectionCommands; */
+
+typedef struct {
+    float forward_spd;
+    float backward_spd;
+    float turn_right_spd;
+    float turn_left_spd;
+    bool stop;
+    bool auto_mode;
+} DirectionCommands;
+
+
 
 // pins for motor stuff
 #define LEFT_MOTOR_PIN 2  //left wheel
@@ -21,7 +54,7 @@
 //#define HISPD_BTN 22
 #define DEBOUNCE_DELAY_MS 100
 #define pwm_freq 1000
-//#define MAX_SPEED 100
+//#define target_speed 100
 //#define desired_rpm 2400
 
 float current_speed = 0;
@@ -29,7 +62,8 @@ bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
 bool line_following_mode = false;
-float max_speed = 70; //target
+bool auto_mode = true;
+float target_speed = 60; //target
 float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
 float prev_motor_speed = 0;
@@ -40,6 +74,7 @@ MessageBufferHandle_t speedMessageBuffer;
 MessageBufferHandle_t objectDistanceMessageBuffer;
 MessageBufferHandle_t leftWheelSpeedMessageBuffer;
 MessageBufferHandle_t rightWheelSpeedMessageBuffer;
+MessageBufferHandle_t directionControlMessageBuffer;
 
 //ultrasonic and wheel encoder stuff
 #define ULTRA_TRIG 7
@@ -59,7 +94,7 @@ absolute_time_t last_pulse_time_right;
 float last_printed_distance = -1.0;
 float total_distance_travelled = 0.0;
 
-#define DESIRED_DISTANCE 17.0 // Distance threshold in cm for object detection
+#define PROXIMITY_DIST 17.0 // Distance threshold in cm for object detection
 volatile bool pulse_started = false;
 volatile uint32_t pulse_start_time = 0;
 volatile uint32_t pulse_end_time = 0;
@@ -75,6 +110,252 @@ volatile bool motor_control_enabled = true;
 #define line_follow_toggle_btn 20
 
 
+void init_motor_control();
+void set_motor_direction(bool clockwise);
+void set_motor_spd(int pin, float speed_percent);
+void set_left_motor_spd(float speed_percent);
+void set_right_motor_spd(float speed_percent);
+void set_left_motor_direction(bool clockwise);
+void set_right_motor_direction(bool clockwise);
+void remote_forward(float speed);
+void remote_backward(float speed);
+void remote_turn_left(float speed);
+void remote_turn_right(float speed);
+void go_stop(float distance);
+void turn_right_90(float speed);
+float convertRPMToSpeed(float current_rpm, float desired_rpm);
+void encoderPinInit();
+float getLeftWheelRPM(float sample_time_ms);
+float getRightWheelRPM(float sample_time_ms);
+void wheel_speed_task(void *pvParameters);
+void printWheelSpeedTask(void *pvParameters);
+void ultSonicPinInit();
+uint32_t echo_pulse(uint trigger_pin, uint echo_pin);
+void updateDistanceTraveled();
+void direction_controls (void *pvParameters);
+void sendDirectioncontrolMessage(DirectionCommands *dir_commands, size_t len);
+void turn_right();
+void turn_left();
+void stop();
+void go();
+
+
+
+//Wifi stuff 
+//A structure to hold the server's state and the connected clients
+typedef struct {
+    struct tcp_pcb *server_pcb;
+    struct tcp_pcb *clients[3];  // Array to hold client PCBs
+    uint8_t buffer_recv[BUF_SIZE];
+    DirectionCommands dir_commands;  // Store the messages (e.g., turnleft, turnright)
+} TCP_SERVER_T;
+
+
+// Initialize the server's state
+static TCP_SERVER_T *tcp_server_init(void) {
+    TCP_SERVER_T *state = calloc(1, sizeof(TCP_SERVER_T));
+    if (!state) {
+        return NULL;
+    }
+    return state;
+}
+
+// Send the received message to all clients (Can use this function and edit it to send whatever message necessary)
+static err_t tcp_server_send_to_clients(TCP_SERVER_T *state, const uint8_t *data, size_t len, struct tcp_pcb *sender) {
+    for (int i = 0; i < 3; i++) {
+        if (state->clients[i] != NULL && state->clients[i] != sender) {
+            err_t err = tcp_write(state->clients[i], data, len, TCP_WRITE_FLAG_COPY);
+            if (err == ERR_OK) {
+                tcp_output(state->clients[i]);
+            }
+        }
+    }
+    return ERR_OK;
+}
+
+// Handle incoming data from clients
+static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
+    TCP_SERVER_T *state = (TCP_SERVER_T *)arg;
+
+    if (!p) {  // Client disconnected
+        for (int i = 0; i < 3; i++) {
+            if (state->clients[i] == tpcb) {
+                state->clients[i] = NULL;  // Mark the slot as empty
+                printf("Client disconnected\n");
+                break;
+            }
+        }
+        return ERR_OK;
+    }
+
+    if (p->tot_len > 0) {
+        pbuf_copy_partial(p, state->buffer_recv, p->tot_len, 0);
+        state->buffer_recv[p->tot_len] = '\0';  // Null-terminate the received string
+
+        if (p->tot_len == sizeof(DirectionCommands)) {
+            // Copy the received data directly into the state->dir_commands struct
+            pbuf_copy_partial(p, &state->dir_commands, sizeof(DirectionCommands), 0);
+
+            // Debug print each field
+            printf("Received command:\n");
+            printf("  Forward speed: %.2f\n", state->dir_commands.forward_spd);
+            printf("  Backward speed: %.2f\n", state->dir_commands.backward_spd);
+            printf("  Turn right speed: %.2f\n", state->dir_commands.turn_right_spd);
+            printf("  Turn left speed: %.2f\n", state->dir_commands.turn_left_spd);
+            printf("  Stop: %s\n", state->dir_commands.stop ? "True" : "False");
+            printf("  Auto mode: %s\n", state->dir_commands.auto_mode ? "True" : "False");
+
+            // Relay the received data to all clients except the sender
+            tcp_server_send_to_clients(state, (uint8_t *)&state->dir_commands, sizeof(DirectionCommands), tpcb);
+            sendDirectioncontrolMessage(&state->dir_commands, sizeof(state->dir_commands));
+            //xMessageBufferSend(directionControlMessageBuffer, &state->dir_commands, sizeof(DirectionCommands), portMAX_DELAY);
+        } else {
+            printf("Received data size mismatch. Expected %zu bytes, got %u bytes.\n", sizeof(DirectionCommands), p->tot_len);
+        }
+
+        // Mark data as received
+        tcp_recved(tpcb, p->tot_len);
+    }
+    pbuf_free(p);  // Free the received buffer
+    return ERR_OK;
+}
+
+// Handle new client connections
+static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
+    TCP_SERVER_T *state = (TCP_SERVER_T *)arg;
+
+    if (err != ERR_OK || client_pcb == NULL) {
+        printf("Failed to accept client connection, error code: %d\n", err);
+        return ERR_VAL;
+    }
+
+    // Try to find an empty slot for the new client
+    for (int i = 0; i < 3; i++) {
+        if (state->clients[i] == NULL) {
+            state->clients[i] = client_pcb;
+            printf("Client %d connected\n", i);
+
+            tcp_arg(client_pcb, state);
+            tcp_recv(client_pcb, tcp_server_recv);
+            return ERR_OK;
+        }
+    }
+
+    // No available slots, reject the connection
+    printf("No available slots for new client, closing connection\n");
+    tcp_close(client_pcb);
+    return ERR_ABRT;
+}
+
+// Open the TCP server and start listening for connections
+static bool tcp_server_open(void *arg) {
+    TCP_SERVER_T *state = (TCP_SERVER_T *)arg;
+
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
+    if (!pcb) {
+        printf("Failed to create PCB\n");
+        return false;
+    }
+
+    err_t err = tcp_bind(pcb, NULL, TCP_PORT);
+    if (err) {
+        printf("Failed to bind to port %d, error code: %d\n", TCP_PORT, err);
+        return false;
+    }
+
+    state->server_pcb = tcp_listen_with_backlog(pcb, 3);
+    if (!state->server_pcb) {
+        tcp_close(pcb);
+        printf("Failed to listen on port %d\n", TCP_PORT);
+        return false;
+    }
+
+    tcp_arg(state->server_pcb, state);
+    tcp_accept(state->server_pcb, tcp_server_accept);
+
+    return true;
+}
+
+// Function for the TCP server FreeRTOS task
+void tcp_server_task(void *pvParameters) {
+    TCP_SERVER_T *state = tcp_server_init();
+    
+    if (!state) {
+        printf("Failed to initialize server\n");
+        vTaskDelete(NULL); // End the task if initialization fails
+    }
+
+    if (!tcp_server_open(state)) {
+        vTaskDelete(NULL); // End the task if opening the server fails
+    }
+
+    struct netif *netif = netif_list;
+    ip_addr_t ip_addr = netif->ip_addr;
+    // Print the IP address
+    printf("Server IP Address: %s\n", ipaddr_ntoa(&ip_addr));
+    printf("AUto mode: %d\n", auto_mode);
+
+    // Main server loop
+    while (true) {
+        
+        cyw43_arch_poll(); // Poll the WiFi stack
+        vTaskDelay(pdMS_TO_TICKS(500)); // Wait for 500 ms
+    }
+
+    printf("Server shutdown\n");
+    vTaskDelete(NULL); // Cleanly exit the task
+}
+
+void sendDirectioncontrolMessage(DirectionCommands *dir_commands, size_t len) {
+    size_t available_space = xMessageBufferSpaceAvailable(directionControlMessageBuffer);
+    if (available_space >= len) {
+        xMessageBufferSend(directionControlMessageBuffer, dir_commands, sizeof(DirectionCommands), portMAX_DELAY);
+    } else {
+        printf("Direction message buffer full, available space: %d, size of buffer,: %d\n", available_space, len);
+        
+    }
+    
+}
+
+void direction_controls (void *pvParameters) {
+    DirectionCommands dir_commands;
+    while (true) {
+        if (!auto_mode) {
+            if (xMessageBufferReceive(directionControlMessageBuffer, &dir_commands, sizeof(dir_commands), portMAX_DELAY) > 0) {
+                if (dir_commands.forward_spd > 0) {
+                    dir_commands.forward_spd > 50 ? dir_commands.forward_spd = 50 : dir_commands.forward_spd;
+                    remote_forward(dir_commands.forward_spd);
+                    
+                } else if (dir_commands.backward_spd > 0) {
+                    dir_commands.backward_spd > 60 ? dir_commands.backward_spd = 60 : dir_commands.backward_spd;
+                    remote_backward(dir_commands.backward_spd);
+                    
+                if (dir_commands.turn_right_spd > 0 && dir_commands.turn_right_spd > dir_commands.forward_spd) {
+                        dir_commands.turn_right_spd += dir_commands.forward_spd/2;
+                        dir_commands.turn_right_spd < 50 ? dir_commands.turn_right_spd = 50 : dir_commands.turn_right_spd;
+                        remote_turn_right(dir_commands.turn_right_spd);
+                        
+                }
+                if (dir_commands.turn_left_spd > 0 && dir_commands.turn_left_spd > dir_commands.forward_spd) {
+                        dir_commands.turn_left_spd += dir_commands.forward_spd/2;
+                        dir_commands.turn_left_spd < 50 ? dir_commands.turn_left_spd = 50 : dir_commands.turn_left_spd;
+                        remote_turn_left(dir_commands.turn_left_spd);
+                        
+                }
+                } if (dir_commands.stop) {
+                    set_left_motor_spd(0);
+                    set_right_motor_spd(0);
+                    
+                } if (dir_commands.auto_mode) {
+                    auto_mode = !auto_mode;
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    
+}
+
 // initialize GPIO and PWM
 void init_motor_control() {
     // Direction pins
@@ -83,6 +364,7 @@ void init_motor_control() {
     gpio_init(DIR_PIN3); gpio_set_dir(DIR_PIN3, GPIO_OUT);
     gpio_init(DIR_PIN4); gpio_set_dir(DIR_PIN4, GPIO_OUT);
 
+    
     // PWM
     gpio_set_function(LEFT_MOTOR_PIN, GPIO_FUNC_PWM);
     gpio_set_function(RIGHT_MOTOR_PIN, GPIO_FUNC_PWM);
@@ -129,9 +411,40 @@ void set_right_motor_direction(bool clockwise) {
 }
 
 float convertRPMToSpeed(float current_rpm, float desired_rpm) {
-    return (current_rpm / desired_rpm) * max_speed;
+    return (current_rpm / desired_rpm) * target_speed;
 }
 
+void remote_forward (float speed) {
+    printf("[Remote] Moving forward\n");
+    set_left_motor_direction(is_clockwise);
+    set_right_motor_direction(is_clockwise);
+    set_left_motor_spd(speed);
+    set_right_motor_spd(speed);
+}
+
+void remote_backward (float speed) {
+    printf("[Remote] Moving backward\n");
+    set_left_motor_direction(!is_clockwise);
+    set_right_motor_direction(!is_clockwise);
+    set_left_motor_spd(speed);
+    set_right_motor_spd(speed);
+}
+
+void remote_turn_left(float speed) {
+    printf("[Remote] Turning left\n");
+    set_left_motor_direction(!is_clockwise);
+    set_right_motor_direction(is_clockwise);
+    set_left_motor_spd(speed);
+    set_right_motor_spd(speed);
+}
+
+void remote_turn_right(float speed) {
+    printf("[Remote] Turning right\n");
+    set_left_motor_direction(is_clockwise);
+    set_right_motor_direction(!is_clockwise);
+    set_left_motor_spd(speed);
+    set_right_motor_spd(speed);
+}
 
 
 void set_motor_spd(int pin, float speed_percent) {
@@ -141,31 +454,32 @@ void set_motor_spd(int pin, float speed_percent) {
     current_speed = speed_percent;
     pwm_set_gpio_level(pin, duty_cycle);
     if (speed_percent != prev_motor_speed) {
-        //printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
+        printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
         prev_motor_speed = speed_percent; // Update last printed speed
     }
 }
 
 void set_left_motor_spd(float speed_percent) {
     if (speed_percent < 0) speed_percent = 0;
-
+    if (speed_percent > 100) speed_percent = 100;
     uint16_t duty_cycle = (uint16_t)((speed_percent / 100.0) * wrap_value);
     current_speed = speed_percent;
     pwm_set_gpio_level(LEFT_MOTOR_PIN, duty_cycle);
     if (speed_percent != prev_motor_speed) {
-        //printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
+        //printf("[Motor] Set left speed to %.2f%%\n", speed_percent);
         prev_motor_speed = speed_percent; // Update last printed speed
     }
 }
 
 void set_right_motor_spd(float speed_percent) {
     if (speed_percent < 0) speed_percent = 0;
+    if (speed_percent > 100) speed_percent = 100;
     speed_percent += 7;
     uint16_t duty_cycle = (uint16_t)((speed_percent / 100.0) * wrap_value);
     current_speed = speed_percent;
     pwm_set_gpio_level(RIGHT_MOTOR_PIN, duty_cycle);
     if (speed_percent != prev_motor_speed) {
-        //printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
+        //printf("[Motor] Set right speed %d", speed_percent);
         prev_motor_speed = speed_percent; // Update last printed speed
     }
 }
@@ -362,11 +676,21 @@ float getRightWheelRPM(float sample_time_ms) {
 
 void wheel_speed_task(void *pvParameters) {
     const TickType_t sampleTimeTicks = pdMS_TO_TICKS(1000);
+    float previous_speed_L = 0;
+    float previous_speed_R = 0;
     while (true) {
-        float speedL = getLeftWheelRPM(100);  
-        xMessageBufferSend(leftWheelSpeedMessageBuffer, &speedL, sizeof(speedL), portMAX_DELAY);
+        float speedL = getLeftWheelRPM(100);
+        if (speedL != previous_speed_L) {
+            xMessageBufferSend(leftWheelSpeedMessageBuffer, &speedL, sizeof(speedL), portMAX_DELAY);
+            previous_speed_L = speedL;
+        }
+        
         float speedR = getRightWheelRPM(100);
-        xMessageBufferSend(rightWheelSpeedMessageBuffer, &speedR, sizeof(speedR), portMAX_DELAY);
+        if (speedR != previous_speed_R) {
+            xMessageBufferSend(rightWheelSpeedMessageBuffer, &speedR, sizeof(speedR), portMAX_DELAY);
+            previous_speed_R = speedR;
+        }
+        
         vTaskDelay(sampleTimeTicks); // Delay for the sampling period
     }
 }
@@ -429,7 +753,7 @@ float pid_control_left(float current_rpm_left, float dt) {
     float current_speed_left = convertRPMToSpeed(current_rpm_left, desired_rpm_left);
     
     // Calculate error between desired and actual speed
-    float error = max_speed - current_speed_left; // We want the speed to reach max_speed
+    float error = target_speed - current_speed_left; // We want the speed to reach target_speed
     integral_left += error * dt;
     float derivative = (error - previous_error_left) / dt;
 
@@ -452,7 +776,7 @@ float pid_control_right(float current_rpm_right, float dt) {
     float current_speed_right = convertRPMToSpeed(current_rpm_right, desired_rpm_right);
     
     // Calculate error between desired and actual speed
-    float error = max_speed - current_speed_right; // We want the speed to reach max_speed
+    float error = target_speed - current_speed_right; // We want the speed to reach target_speed
     integral_right += error * dt;
     float derivative = (error - previous_error_right) / dt;
 
@@ -490,8 +814,9 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
 
 void motor_control_task(void *pvParameters) {
     absolute_time_t last_time = get_absolute_time();
+    
     while (true) {
-        if (motor_control_enabled) {
+        if (auto_mode && !object_detected) {
             // Get current RPM from encoders (you need to implement these functions)
             float left_rpm = getLeftWheelRPM(100);  // Example: measure left wheel RPM over 100ms
             float right_rpm = getRightWheelRPM(100);  // Example: measure right wheel RPM over 100ms
@@ -518,7 +843,34 @@ void motor_control_task(void *pvParameters) {
 
 
 void ultrasonic_wheel_speed_isr(uint gpio, uint32_t events) {
-    if (gpio == ROTARY_PIN_L) {
+    switch (gpio) {
+        case ULTRA_ECHO:
+            if (events & GPIO_IRQ_EDGE_RISE) {
+                pulse_start_time = time_us_32();
+                pulse_started = true;
+            } else if (events & GPIO_IRQ_EDGE_FALL && pulse_started) {
+                pulse_end_time = time_us_32();
+                uint32_t pulse_duration = pulse_end_time - pulse_start_time;
+                pulse_started = false;
+                // Calculate distance in cm
+                float distance = (pulse_duration / 2.0) * 0.0343;
+                if (distance <= PROXIMITY_DIST && distance > 1.0) {
+                    object_detected = true;
+                } else {
+                    object_detected = false;
+                }
+            }
+            break;
+        case ROTARY_PIN_R:
+            global_pulse_count_right++;
+            break;
+        case ROTARY_PIN_L:
+            global_pulse_count_left++;
+            //global_pulse_count_for_turn_right++;
+            break;
+    }
+
+    /* if (gpio == ROTARY_PIN_L) {
         global_pulse_count_left++;
         global_pulse_count_for_turn_right++;
     } else if (gpio == ROTARY_PIN_R) {
@@ -531,16 +883,15 @@ void ultrasonic_wheel_speed_isr(uint gpio, uint32_t events) {
             pulse_end_time = time_us_32();
             uint32_t pulse_duration = pulse_end_time - pulse_start_time;
             pulse_started = false;
-
             // Calculate distance in cm
             float distance = (pulse_duration / 2.0) * 0.0343;
-            if (distance <= DESIRED_DISTANCE && distance > 1.0) {
+            if (distance <= PROXIMITY_DIST && distance > 1.0) {
                 object_detected = true;
             }
             xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
         }
 
-    }
+    } */
 }
 
 
@@ -550,71 +901,22 @@ void send_trigger_pulse() {
     sleep_us(10); // Pulse duration
     gpio_put(ULTRA_TRIG, 0);
 }
-float pid_turn_speed(float current_distance) {
-    // pid controller
-    float Kp = 1.0;
-    float Ki = 0.5;
-    float Kd = 0.1;
-    float dt = 0.5;
-    float desired_distance = 10.0; // desired distance in cm
-    float prev_error = 0.0, integral = 0.0;
-    float error = desired_distance - current_distance;
-    integral += error * dt; // Accumulate error over time
-    float derivative = (error - prev_error) / dt; // Rate of change of error
-    prev_error = error; // Update for next iteration
-
-    // Apply PID formula, adjust gains as needed
-    float output = (Kp * error) + (Ki * integral) + (Kd * derivative);
-
-    // Limit output to avoid sudden changes
-    if (output > 100.0) output = 100.0;
-    if (output < 0.0) output = 0.0;
-
-    if (output < 50) output += 50; // Minimum speed to prevent stalling
-
-    return output;
-}
 
 // Task to monitor distance and turn if necessary
-void ultrasonic_task(void *pvParameters) {
+void auto_mode_task(void *pvParameters) {
     bool in_cooldown = false;
 
     while (true) {
-        if (!in_cooldown && !stopped && !line_following_mode) {
-            // Send a trigger pulse
-            float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
-            //xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
+        if (auto_mode) {
+            if (!in_cooldown && !stopped && !line_following_mode) {
 
-            // Check if an object is detected
-            if (object_detected && !is_turning ) {
-                printf("[Ultrasonic] Object detected at %.2f cm\n" , distance);
-                
-                motor_control_enabled = false;
-                //turn_right_90(100);
-
-                // Reset the object_detected flag and start cooldown
-                object_detected = false;
-                //is_turning = false;
-                //printf("Turning flag is now false\n");
-                in_cooldown = true;
-                set_motor_direction(is_clockwise);
-                set_left_motor_spd(70);
-                set_right_motor_spd(70);
-                //set_motor_spd(LEFT_MOTOR_PIN, 70);
-                //set_motor_spd(RIGHT_MOTOR_PIN, 71); 
-                //go_stop(90.0);
-                //is_stopping = true;
-                // Delay to prevent immediate re-triggering
-                vTaskDelay(pdMS_TO_TICKS(500));  // Adjust the delay as needed
-                printf("Cooldown period started\n");
-
-            } else {
                 if (is_moving) {
                     set_motor_direction(is_clockwise);
-                    set_left_motor_spd(70);
-                    set_right_motor_spd(70);
-                    //set_motor_spd(LEFT_MOTOR_PIN, 70);
-                    //set_motor_spd(RIGHT_MOTOR_PIN, 70); 
+                    
+                    //set_left_motor_spd(60);
+                    //set_right_motor_spd(60);
+                    set_motor_spd(LEFT_MOTOR_PIN, 60);
+                    set_motor_spd(RIGHT_MOTOR_PIN, 60); 
                 }
                 if (stopped) {
                     set_left_motor_spd(0);
@@ -622,20 +924,30 @@ void ultrasonic_task(void *pvParameters) {
                     //set_motor_spd(LEFT_MOTOR_PIN, 0);
                     //set_motor_spd(RIGHT_MOTOR_PIN, 0);
                 }
-                
-                
+                    
             }
-        } else {
-            // Cooldown period to avoid continuous triggering
-            vTaskDelay(pdMS_TO_TICKS(500));  // Cooldown duration
-            in_cooldown = false;
+            } else {
+                // Cooldown period to avoid continuous triggering
+                vTaskDelay(pdMS_TO_TICKS(500));  // Cooldown duration
+                in_cooldown = false;
+            }
         }
     
         vTaskDelay(pdMS_TO_TICKS(100));
-    }
 }
 
-
+void proximitiy_stop(void *pvParameters) {
+    while (true) {
+        float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
+        if (object_detected) {
+            printf("Distance from object: %.2f cm\n", distance);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        else {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+}
 
 void print_dist_task(void *pvParameters) {
     float distance;
@@ -650,6 +962,16 @@ void print_dist_task(void *pvParameters) {
             
         }
     }
+}
+
+void go(){
+    auto_mode = true;
+    is_moving = true;
+    stopped = false;
+    set_motor_direction(is_clockwise);
+    set_left_motor_spd(70);
+    set_right_motor_spd(70);
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 void turn_right() {
@@ -668,7 +990,8 @@ void turn_left() {
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
-void stop () {
+void stop() {
+    auto_mode = false;
     set_left_motor_spd(0);
     set_right_motor_spd(0);
     stopped = true;
@@ -732,6 +1055,18 @@ int main() {
     ultSonicPinInit();
     encoderPinInit();
     ir_sensor_init();
+     // Initialize hardware and WiFi architecture
+    if (cyw43_arch_init()) {
+        printf("WiFi initialization failed!\n");
+        return 1;
+    }
+    
+    cyw43_arch_enable_sta_mode();
+
+    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 30000)) {
+        printf("WiFi connection failed\n");
+        return 1;
+    }
 
     // Create message buffers for direction and speed
     directionMessageBuffer = xMessageBufferCreate(64);
@@ -764,6 +1099,9 @@ int main() {
         return 1;
     }
 
+    directionControlMessageBuffer = xMessageBufferCreate(2048);
+
+
     // Set up interrupts
     /* gpio_set_irq_enabled_with_callback(DIR_BTN, GPIO_IRQ_EDGE_FALL, true, &button_isr);
     gpio_set_irq_enabled_with_callback(LOWSPD_BTN, GPIO_IRQ_EDGE_FALL, true, &button_isr);
@@ -773,17 +1111,22 @@ int main() {
     gpio_set_irq_enabled_with_callback(ROTARY_PIN_R, GPIO_IRQ_EDGE_RISE, true, &ultrasonic_wheel_speed_isr);
     gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &ultrasonic_wheel_speed_isr);
 
+    // Create the TCP server task
+    xTaskCreate(tcp_server_task, "TCP Server Task", 512, NULL, 1, NULL);
     /* xTaskCreate(direction_task, "Direction Task", 512, NULL, 1, NULL);
     xTaskCreate(speed_task, "Speed Task", 512, NULL, 1, NULL); */
-    xTaskCreate(ultrasonic_task, "Ultrasonic Task", 512, NULL, 1, NULL);
+    xTaskCreate(auto_mode_task, "Auto Task", 512, NULL, 1, NULL);
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
-    //xTaskCreate(motor_control_task, "Motor Control Task", 512, NULL, 1, NULL);
+    xTaskCreate(motor_control_task, "Motor Control Task", 512, NULL, 1, NULL);
     xTaskCreate(line_following_task, "Line Following Task", 512, NULL, 1, NULL);
-    //xTaskCreate(pid_speed_balancer, "PID Speed Balancer Task", 512, NULL, 1, NULL);
+    xTaskCreate(direction_controls, "Direction Controls Task", 512, NULL, 1, NULL);
+    xTaskCreate(proximitiy_stop, "Proximity Stop Task", 512, NULL, 1, NULL);
 
     vTaskStartScheduler();
 
+  // Deinitialize WiFi if the scheduler stops 
+    cyw43_arch_deinit();
     return 0;
 }
