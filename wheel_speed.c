@@ -63,7 +63,7 @@ bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
 bool line_following_mode = false;
-bool auto_mode = true;
+bool auto_mode = false;
 float target_speed = 60; //target
 float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
@@ -424,22 +424,22 @@ void direction_controls (void *pvParameters) {
             if (xMessageBufferReceive(directionControlMessageBuffer, &dir_commands, sizeof(dir_commands), portMAX_DELAY) > 0) {
                 if (dir_commands.forward_spd > 0) {
                     dir_commands.forward_spd > 50 ? dir_commands.forward_spd = 50 : dir_commands.forward_spd;
-                    remote_forward(dir_commands.forward_spd);
+                    remote_forward(60);
                     
                 } else if (dir_commands.backward_spd > 0) {
                     dir_commands.backward_spd > 60 ? dir_commands.backward_spd = 60 : dir_commands.backward_spd;
-                    remote_backward(dir_commands.backward_spd);
+                    remote_backward(60);
                     
                 if (dir_commands.turn_right_spd > 0 && dir_commands.turn_right_spd > dir_commands.forward_spd) {
                         dir_commands.turn_right_spd += dir_commands.forward_spd/2;
                         dir_commands.turn_right_spd < 50 ? dir_commands.turn_right_spd = 50 : dir_commands.turn_right_spd;
-                        remote_turn_right(dir_commands.turn_right_spd);
+                        remote_turn_right(60);
                         
                 }
                 if (dir_commands.turn_left_spd > 0 && dir_commands.turn_left_spd > dir_commands.forward_spd) {
                         dir_commands.turn_left_spd += dir_commands.forward_spd/2;
                         dir_commands.turn_left_spd < 50 ? dir_commands.turn_left_spd = 50 : dir_commands.turn_left_spd;
-                        remote_turn_left(dir_commands.turn_left_spd);
+                        remote_turn_left(60);
                         
                 }
                 } if (dir_commands.stop) {
@@ -1032,7 +1032,6 @@ void auto_mode_task(void *pvParameters) {
 
                 if (is_moving) {
                     set_motor_direction(is_clockwise);
-                    
                     //set_left_motor_spd(60);
                     //set_right_motor_spd(60);
                     set_motor_spd(LEFT_MOTOR_PIN, 60);
@@ -1175,10 +1174,14 @@ void line_following_task(void *pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         if (line_following_mode) {
-            if (gpio_get(LINE_SENSOR_PIN) == 0) {
+            if (gpio_get(LINE_SENSOR_PIN) == 1) {
                 printf("Line detected\n");
+                go(45);
             } else {
                 printf("No line detected, finding line now\n");
+                stop();
+                sleep_ms(500);
+                find_line(7);
 
             }
             
@@ -1189,12 +1192,28 @@ void line_following_task(void *pvParameters) {
 }
 
 void find_line(int num_of_tries) {
+    float speed = 45;
+    float turn_duration = 500;
     for (int i = 0; i < num_of_tries; i++) {
-        turn_right(40);
-        sleep_ms(500);
-        turn_left(40);
-        sleep_ms(500);
+        turn_right(speed);
+        if(gpio_get(LINE_SENSOR_PIN) == 1) {
+            printf("Line found\n");
+            go(45);
+            break;
+        }
+        sleep_ms(turn_duration);
+        turn_left(speed);
+        if(gpio_get(LINE_SENSOR_PIN) == 1) {
+            printf("Line found\n");
+            go(45);
+            break;
+        }
+        turn_duration = turn_duration * 1.5;
+        sleep_ms(turn_duration);
+        speed = speed + 10;
+        
     }
+    
 }
 
 // Main function
