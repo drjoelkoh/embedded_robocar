@@ -1173,17 +1173,12 @@ void line_following_task(void *pvParameters) {
             line_following_mode = !line_following_mode;
             printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
             vTaskDelay(pdMS_TO_TICKS(1000));
-            stop();
         }
         if (line_following_mode) {
-            if (gpio_get(LINE_SENSOR_PIN) == 1) {
+            if (gpio_get(LINE_SENSOR_PIN) == 0) {
                 printf("Line detected\n");
-                go(40);
             } else {
                 printf("No line detected, finding line now\n");
-                stop();
-                sleep_ms(300);
-                find_line(7);
 
             }
             
@@ -1275,7 +1270,6 @@ int main() {
     gpio_set_irq_enabled_with_callback(ROTARY_PIN_R, GPIO_IRQ_EDGE_RISE, true, &isr_handler);
     gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &isr_handler);
     gpio_set_irq_enabled_with_callback(BARCODE_SENSOR_PIN, GPIO_IRQ_EDGE_RISE, true, &isr_handler);
-    gpio_set_irq_enabled_with_callback(LINE_SENSOR_PIN, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &isr_handler);
 
     // Create the TCP server task
     xTaskCreate(tcp_server_task, "TCP Server Task", 512, NULL, 1, NULL);
