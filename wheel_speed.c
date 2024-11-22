@@ -12,6 +12,7 @@
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/timer.h"
+#include "hardware/adc.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "message_buffer.h"
@@ -106,8 +107,9 @@ volatile bool stopped = false;
 volatile bool motor_control_enabled = true;
 
 //IR sensor stuff
-#define LINE_SENSOR_PIN 26
-#define BARCODE_SENSOR_PIN 27
+#define LINE_SENSOR_PIN 27
+#define BARCODE_SENSOR_PIN 26
+#define BLACK_THRESHOLD 165
 #define line_follow_toggle_btn 20
 #define MAX_PULSES 200
 #define TOTAL_CHAR 43
@@ -139,10 +141,12 @@ uint32_t echo_pulse(uint trigger_pin, uint echo_pin);
 void updateDistanceTraveled();
 void direction_controls (void *pvParameters);
 void sendDirectioncontrolMessage(DirectionCommands *dir_commands, size_t len);
-void turn_right();
-void turn_left();
+void turn_right(float speed);
+void turn_left(float speed);
 void stop();
-void go();
+void go(float speed);
+void line_following();
+void find_line();
 
 /* Barcode Data and Lookup Tables */
 const char *barcode_lookup_chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-.$/+% ";
@@ -389,7 +393,7 @@ void tcp_server_task(void *pvParameters) {
     ip_addr_t ip_addr = netif->ip_addr;
     // Print the IP address
     printf("Server IP Address: %s\n", ipaddr_ntoa(&ip_addr));
-    printf("AUto mode: %d\n", auto_mode);
+    printf("Auto mode: %d\n", auto_mode);
 
     // Main server loop
     while (true) {
@@ -550,7 +554,7 @@ void set_motor_spd(int pin, float speed_percent) {
     current_speed = speed_percent;
     pwm_set_gpio_level(pin, duty_cycle);
     if (speed_percent != prev_motor_speed) {
-        printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
+        //printf("[Motor] Set speed of pin %d to %.2f%%\n", pin, speed_percent);
         prev_motor_speed = speed_percent; // Update last printed speed
     }
 }
@@ -857,7 +861,7 @@ float pid_control_left(float current_rpm_left, float dt) {
     float output = Kp * error + Ki * integral_left + Kd * derivative;
     previous_error_left = error;
 
-    printf("Adjusted left motor speed: %.2f\n", output);    
+    //printf("Adjusted left motor speed: %.2f\n", output);    
 
     return output;
 }
@@ -880,7 +884,7 @@ float pid_control_right(float current_rpm_right, float dt) {
     float output = Kp * error + Ki * integral_right + Kd * derivative;
     previous_error_right = error;
 
-    printf("Adjusted right motor speed: %.2f\n", output);
+    //printf("Adjusted right motor speed: %.2f\n", output);
 
     return output;
 }
@@ -912,7 +916,7 @@ void motor_control_task(void *pvParameters) {
     absolute_time_t last_time = get_absolute_time();
     
     while (true) {
-        if (auto_mode && !object_detected) {
+        if (auto_mode && !is_turning) {
             // Get current RPM from encoders (you need to implement these functions)
             float left_rpm = getLeftWheelRPM(100);  // Example: measure left wheel RPM over 100ms
             float right_rpm = getRightWheelRPM(100);  // Example: measure right wheel RPM over 100ms
@@ -1024,7 +1028,7 @@ void auto_mode_task(void *pvParameters) {
 
     while (true) {
         if (auto_mode) {
-            if (!in_cooldown && !stopped && !line_following_mode) {
+            if (!in_cooldown && !stopped) {
 
                 if (is_moving) {
                     set_motor_direction(is_clockwise);
@@ -1080,29 +1084,31 @@ void print_dist_task(void *pvParameters) {
     }
 }
 
-void go(){
+void go(float speed){
     auto_mode = true;
     is_moving = true;
     stopped = false;
     set_motor_direction(is_clockwise);
-    set_left_motor_spd(70);
-    set_right_motor_spd(70);
+    set_motor_spd(LEFT_MOTOR_PIN, speed);
+    set_motor_spd(RIGHT_MOTOR_PIN, speed);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
-void turn_right() {
+void turn_right(float speed) {
+    is_turning = true;
     set_left_motor_direction(is_clockwise);
     set_right_motor_direction(!is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 50);
-    set_motor_spd(RIGHT_MOTOR_PIN, 50);
+    set_motor_spd(LEFT_MOTOR_PIN, speed);
+    set_motor_spd(RIGHT_MOTOR_PIN, speed);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
-void turn_left() {
+void turn_left(float speed) {
+    is_turning = true;
     set_left_motor_direction(!is_clockwise);
     set_right_motor_direction(is_clockwise);
-    set_motor_spd(LEFT_MOTOR_PIN, 50);
-    set_motor_spd(RIGHT_MOTOR_PIN, 50);
+    set_motor_spd(LEFT_MOTOR_PIN, speed);
+    set_motor_spd(RIGHT_MOTOR_PIN, speed);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
@@ -1117,6 +1123,9 @@ void stop() {
 }
 
 void ir_sensor_init() {
+    /* adc_init();
+    adc_gpio_init(LINE_SENSOR_PIN);
+    adc_select_input(0); */
     gpio_init(LINE_SENSOR_PIN);
     gpio_set_dir(LINE_SENSOR_PIN, GPIO_IN);
     gpio_pull_down(LINE_SENSOR_PIN);
@@ -1130,37 +1139,66 @@ void ir_sensor_init() {
     gpio_pull_down(line_follow_toggle_btn);
 }
 
+/* void line_following_task(void *pvParameters) {
+    while (true) {
+        uint32_t ir_value = adc_read();
+    
+        if (gpio_get(line_follow_toggle_btn) == 0) {
+            line_following_mode = !line_following_mode;
+            printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        if (line_following_mode) {
+            stop();
+            if (ir_value < BLACK_THRESHOLD) {
+                
+                go();
+                printf("Line detected, IR sensor value: %d\n", ir_value);
+            
+            } else {
+               
+                printf("No line detected, IR sensor value: %d\n", ir_value);
+                stop();
+                sleep_ms(500);
+                turn_right();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+} */
+
 void line_following_task(void *pvParameters) {
     while (true) {
         if (gpio_get(line_follow_toggle_btn) == 0) {
             line_following_mode = !line_following_mode;
             printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
             vTaskDelay(pdMS_TO_TICKS(1000));
+            stop();
         }
-        if (line_following_mode && !stopped) {
-            if (gpio_get(LINE_SENSOR_PIN)==1 && gpio_get(BARCODE_SENSOR_PIN)==1) {
-                printf("Left sensor: %d, Right sensor: %d\n, Stopped", gpio_get(LINE_SENSOR_PIN), gpio_get(BARCODE_SENSOR_PIN));
+        if (line_following_mode) {
+            if (gpio_get(LINE_SENSOR_PIN) == 1) {
+                printf("Line detected\n");
+                go(40);
+            } else {
+                printf("No line detected, finding line now\n");
                 stop();
-                float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
-                printf("Distance from object: %.2f cm\n", distance);
-                vTaskSuspend(NULL);
-            }
-            if (gpio_get(BARCODE_SENSOR_PIN)==0) {
-                printf("Left sensor: %d, Right sensor: %d\n, Moving forward", gpio_get(LINE_SENSOR_PIN), gpio_get(BARCODE_SENSOR_PIN));
-                set_motor_direction(is_clockwise);
-                set_motor_spd(LEFT_MOTOR_PIN, 50);
-                set_motor_spd(RIGHT_MOTOR_PIN, 50);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
-            else if (gpio_get(BARCODE_SENSOR_PIN)==1) {
-                printf("Left sensor: %d, Right sensor: %d\n, Turning left", gpio_get(LINE_SENSOR_PIN), gpio_get(BARCODE_SENSOR_PIN));
-                turn_left();
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                sleep_ms(300);
+                find_line(7);
+
             }
             
         }
         
         vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void find_line(int num_of_tries) {
+    for (int i = 0; i < num_of_tries; i++) {
+        turn_right(40);
+        sleep_ms(500);
+        turn_left(40);
+        sleep_ms(500);
     }
 }
 
@@ -1237,6 +1275,7 @@ int main() {
     gpio_set_irq_enabled_with_callback(ROTARY_PIN_R, GPIO_IRQ_EDGE_RISE, true, &isr_handler);
     gpio_set_irq_enabled_with_callback(ULTRA_ECHO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &isr_handler);
     gpio_set_irq_enabled_with_callback(BARCODE_SENSOR_PIN, GPIO_IRQ_EDGE_RISE, true, &isr_handler);
+    gpio_set_irq_enabled_with_callback(LINE_SENSOR_PIN, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &isr_handler);
 
     // Create the TCP server task
     xTaskCreate(tcp_server_task, "TCP Server Task", 512, NULL, 1, NULL);
@@ -1245,7 +1284,7 @@ int main() {
     xTaskCreate(auto_mode_task, "Auto Task", 512, NULL, 1, NULL);
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
-    xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
+    //xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(motor_control_task, "Motor Control Task", 512, NULL, 1, NULL);
     xTaskCreate(line_following_task, "Line Following Task", 512, NULL, 1, NULL);
     xTaskCreate(direction_controls, "Direction Controls Task", 512, NULL, 1, NULL);
