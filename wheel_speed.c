@@ -63,7 +63,7 @@ bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
 bool line_following_mode = false;
-bool auto_mode = false;
+bool auto_mode = true;
 float target_speed = 60; //target
 float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
@@ -104,7 +104,9 @@ volatile bool object_detected = false;
 volatile bool is_turning = false;
 volatile bool is_stopping = false;
 volatile bool stopped = false;
+volatile bool on_black = false;
 volatile bool motor_control_enabled = true;
+
 
 //IR sensor stuff
 #define LINE_SENSOR_PIN 27
@@ -895,6 +897,11 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
     float right_pid_output = pid_control_right(right_rpm, dt);
 
     // Convert PID output to motor speed (normalized to 0-100% range)
+    if(on_black) {
+        right_pid_output = 0;
+        left_pid_output = 0;
+        
+    }
     float left_motor_speed = left_pid_output;
     float right_motor_speed = right_pid_output;
 
@@ -906,8 +913,10 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
     //printf("New Left motor speed: %.2f, New Right motor speed: %.2f\n", left_motor_speed, right_motor_speed);
 
     // Set motor speeds
+    
     set_left_motor_spd(left_motor_speed);
     set_right_motor_spd(right_motor_speed);
+    
     //set_motor_spd(LEFT_MOTOR_PIN, left_motor_speed);
     //set_motor_spd(RIGHT_MOTOR_PIN, right_motor_speed);
 }
@@ -1028,7 +1037,7 @@ void auto_mode_task(void *pvParameters) {
 
     while (true) {
         if (auto_mode) {
-            if (!in_cooldown && !stopped) {
+            if (!in_cooldown && !stopped && !on_black) {
 
                 if (is_moving) {
                     set_motor_direction(is_clockwise);
@@ -1174,14 +1183,17 @@ void line_following_task(void *pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         if (line_following_mode) {
-            if (gpio_get(LINE_SENSOR_PIN) == 1) {
-                printf("Line detected\n");
+            if (gpio_get(LINE_SENSOR_PIN) == 0) {
+                printf("WHITE\n");
+                on_black = false;
                 go(45);
             } else {
-                printf("No line detected, finding line now\n");
+                printf("BLACK\n");
+                on_black = true;
+                /* printf("No line detected, finding line now\n");
                 stop();
                 sleep_ms(500);
-                find_line(7);
+                find_line(7); */
 
             }
             
@@ -1193,8 +1205,8 @@ void line_following_task(void *pvParameters) {
 
 void find_line(int num_of_tries) {
     float speed = 45;
-    float turn_duration = 500;
-    for (int i = 0; i < num_of_tries; i++) {
+    float turn_duration = 300;
+    while (num_of_tries > 0) {
         turn_right(speed);
         if(gpio_get(LINE_SENSOR_PIN) == 1) {
             printf("Line found\n");
@@ -1202,6 +1214,8 @@ void find_line(int num_of_tries) {
             break;
         }
         sleep_ms(turn_duration);
+        stop();
+        sleep_ms(500);
         turn_left(speed);
         if(gpio_get(LINE_SENSOR_PIN) == 1) {
             printf("Line found\n");
@@ -1210,8 +1224,10 @@ void find_line(int num_of_tries) {
         }
         turn_duration = turn_duration * 1.5;
         sleep_ms(turn_duration);
+        stop();
+        sleep_ms(500);
         speed = speed + 10;
-        
+        num_of_tries--;
     }
     
 }
@@ -1297,7 +1313,7 @@ int main() {
     xTaskCreate(auto_mode_task, "Auto Task", 512, NULL, 1, NULL);
     xTaskCreate(print_dist_task, "Print Distance Task", 512, NULL, 1, NULL);
     xTaskCreate(wheel_speed_task, "Wheel Speed Task", 512, NULL, 1, NULL);
-    //xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
+    xTaskCreate(printWheelSpeedTask, "Print Wheel Speed Task", 512, NULL, 1, NULL);
     xTaskCreate(motor_control_task, "Motor Control Task", 512, NULL, 1, NULL);
     xTaskCreate(line_following_task, "Line Following Task", 512, NULL, 1, NULL);
     xTaskCreate(direction_controls, "Direction Controls Task", 512, NULL, 1, NULL);
