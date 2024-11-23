@@ -27,6 +27,7 @@
 
 #define TCP_PORT 4242
 #define SERVER_IP "172.20.10.11" // Update with server IP 172.20.10.11
+#define CHANGES_THRESHOLD 20
 
 static struct tcp_pcb *client_pcb;
 static bool connected = false;
@@ -51,6 +52,8 @@ typedef struct {
     bool stop;
     bool auto_mode;
 } DirectionCommands;
+
+DirectionCommands previous_commands = {0.0f, 0.0f, 0.0f, 0.0f, false, false};
 
 KalmanFilter kalman_xa = {0.05, 0.05, 0, 1, 0}; // Lower process noise for smoother readings
 KalmanFilter kalman_ya = {0.05, 0.05, 0, 1, 0};
@@ -107,6 +110,37 @@ void calculate_tilt(float xa, float ya, float za, float xm, float ym, float zm, 
     if (yaw < 0) {
         yaw += 360; // Ensure yaw is within 0-360 degrees
     }
+}
+
+void set_previous_commands(DirectionCommands *prev_commands, DirectionCommands *dir_commands) {
+    prev_commands->forward_spd = dir_commands->forward_spd;
+    prev_commands->backward_spd = dir_commands->backward_spd;
+    prev_commands->turn_right_spd = dir_commands->turn_right_spd;
+    prev_commands->turn_left_spd = dir_commands->turn_left_spd;
+    prev_commands->stop = dir_commands->stop;
+    prev_commands->auto_mode = dir_commands->auto_mode;
+}
+
+bool compare_previous(DirectionCommands *prev_commands, DirectionCommands *dir_commands) {
+    if (fabs(dir_commands->forward_spd - prev_commands->forward_spd) > CHANGES_THRESHOLD) {
+        return true;
+    }
+    if (fabs(dir_commands->backward_spd - prev_commands->backward_spd) > CHANGES_THRESHOLD) {
+        return true;
+    }
+    if (fabs(dir_commands->turn_right_spd - prev_commands->turn_right_spd) > CHANGES_THRESHOLD) {
+        return true;
+    }
+    if (fabs(dir_commands->turn_left_spd - prev_commands->turn_left_spd) > CHANGES_THRESHOLD) {
+        return true;
+    }
+    if (dir_commands->stop != prev_commands->stop) {
+        return true;
+    }
+    if (dir_commands->auto_mode != prev_commands->auto_mode) {
+        return true;
+    }
+    return false;
 }
 
 void read_sensor_data() {
@@ -204,11 +238,11 @@ static void send_pitch_roll_yaw(float pitch, float roll, float yaw) {
 
         // Determine the turning direction
         if (roll > 10) {
-            snprintf(message, sizeof(message), "Command: Turn Left at %d%% speed\n", turn_speed);
-            dir_commands.turn_left_spd = turn_speed;
-        } else if (roll < -10) {
             snprintf(message, sizeof(message), "Command: Turn Right at %d%% speed\n", turn_speed);
             dir_commands.turn_right_spd = turn_speed;
+        } else if (roll < -10) {
+            snprintf(message, sizeof(message), "Command: Turn Left at %d%% speed\n", turn_speed);
+            dir_commands.turn_left_spd = turn_speed;
         }
 
         if (gpio_get(TOGGLE_BTN)==0) {
@@ -217,18 +251,21 @@ static void send_pitch_roll_yaw(float pitch, float roll, float yaw) {
             sleep_ms(1000);
         }
         
-        //err_t err = tcp_write(client_pcb, message, strlen(message), TCP_WRITE_FLAG_COPY);
-        err_t err = tcp_write(client_pcb, &dir_commands, sizeof(dir_commands), TCP_WRITE_FLAG_COPY);
-        if (err == ERR_OK) {
-            tcp_output(client_pcb);
-            printf("Sent: %s\n", message);
-        } else if (err == ERR_MEM) {
-            printf("TCP buffer full, retrying\n");
-            sleep_ms(10); // Short delay to prevent overloading
+        if (compare_previous(&previous_commands, &dir_commands)) {
+            //err_t err = tcp_write(client_pcb, message, strlen(message), TCP_WRITE_FLAG_COPY);
+            err_t err = tcp_write(client_pcb, &dir_commands, sizeof(dir_commands), TCP_WRITE_FLAG_COPY);
+            set_previous_commands(&previous_commands, &dir_commands);
+            if (err == ERR_OK) {
+                tcp_output(client_pcb);
+                printf("Sent: %s\n", message);
+            } else if (err == ERR_MEM) {
+                printf("TCP buffer full, retrying\n");
+                sleep_ms(10); // Short delay to prevent overloading
+            }
         }
-        else {
+        /* else {
             printf("Failed to send message\n");
-        }
+        } */
     } else {
         printf("Not connected to server\n");
     }
