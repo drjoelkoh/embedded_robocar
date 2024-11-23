@@ -54,7 +54,7 @@ typedef struct {
 //#define LOWSPD_BTN 21
 //#define HISPD_BTN 22
 #define DEBOUNCE_DELAY_MS 100
-#define pwm_freq 1000
+#define pwm_freq 500
 //#define target_speed 100
 //#define desired_rpm 2400
 
@@ -63,7 +63,7 @@ bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
 bool line_following_mode = false;
-bool auto_mode = true;
+bool auto_mode = false; //MAKE THIS FALSE TO START UP IN REMOTE CONTROL MODE
 float target_speed = 60; //target
 float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
@@ -109,14 +109,14 @@ volatile bool motor_control_enabled = true;
 
 
 //IR sensor stuff
-#define LINE_SENSOR_PIN 27
-#define BARCODE_SENSOR_PIN 26
+#define LINE_SENSOR_PIN 26 // iswapped these
+#define BARCODE_SENSOR_PIN 27
 #define BLACK_THRESHOLD 165
 #define line_follow_toggle_btn 20
 #define MAX_PULSES 200
 #define TOTAL_CHAR 43
 #define DEBOUNCE_DELAY_US 20000
-#define PULSE_COUNT_THRESHOLD 9
+#define PULSE_COUNT_THRESHOLD 7
 
 
 void init_motor_control();
@@ -308,6 +308,7 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
             printf("  Auto mode: %s\n", state->dir_commands.auto_mode ? "True" : "False");
 
             // Relay the received data to all clients except the sender
+            // THIS FUNCTION SEND STUFF TO DASHBOARD
             tcp_server_send_to_clients(state, (uint8_t *)&state->dir_commands, sizeof(DirectionCommands), tpcb);
             sendDirectioncontrolMessage(&state->dir_commands, sizeof(state->dir_commands));
             //xMessageBufferSend(directionControlMessageBuffer, &state->dir_commands, sizeof(DirectionCommands), portMAX_DELAY);
@@ -426,22 +427,22 @@ void direction_controls (void *pvParameters) {
             if (xMessageBufferReceive(directionControlMessageBuffer, &dir_commands, sizeof(dir_commands), portMAX_DELAY) > 0) {
                 if (dir_commands.forward_spd > 0) {
                     dir_commands.forward_spd > 50 ? dir_commands.forward_spd = 50 : dir_commands.forward_spd;
-                    remote_forward(60);
+                    remote_forward(50);
                     
                 } else if (dir_commands.backward_spd > 0) {
                     dir_commands.backward_spd > 60 ? dir_commands.backward_spd = 60 : dir_commands.backward_spd;
-                    remote_backward(60);
+                    remote_backward(50);
                     
                 if (dir_commands.turn_right_spd > 0 && dir_commands.turn_right_spd > dir_commands.forward_spd) {
                         dir_commands.turn_right_spd += dir_commands.forward_spd/2;
                         dir_commands.turn_right_spd < 50 ? dir_commands.turn_right_spd = 50 : dir_commands.turn_right_spd;
-                        remote_turn_right(60);
+                        remote_turn_right(50);
                         
                 }
                 if (dir_commands.turn_left_spd > 0 && dir_commands.turn_left_spd > dir_commands.forward_spd) {
                         dir_commands.turn_left_spd += dir_commands.forward_spd/2;
                         dir_commands.turn_left_spd < 50 ? dir_commands.turn_left_spd = 50 : dir_commands.turn_left_spd;
-                        remote_turn_left(60);
+                        remote_turn_left(50);
                         
                 }
                 } if (dir_commands.stop) {
@@ -871,6 +872,7 @@ float pid_control_left(float current_rpm_left, float dt) {
 // PID control function for right motor
 float pid_control_right(float current_rpm_right, float dt) {
     //float Kp = 1.1, Ki = 0.1, Kd = 0.51; // PID coefficients
+    //float Kp = 2.6, Ki = 0.01, Kd = 0.035; //backup
     float Kp = 2.6, Ki = 0.01, Kd = 0.035;
     float previous_error_right = 0.0;
     float integral_right = 0.0;
@@ -896,12 +898,16 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
     float left_pid_output = pid_control_left(left_rpm, dt);
     float right_pid_output = pid_control_right(right_rpm, dt);
 
-    // Convert PID output to motor speed (normalized to 0-100% range)
-    if(on_black) {
-        right_pid_output = 0;
-        left_pid_output = 0;
-        
+    // Line-following logic for turning
+    if (on_black) {
+        // Gradually reduce speed of one motor for turning
+        //float turn_factor = 0.5;  // Adjust this for sharper or smoother turns
+        //left_pid_output *= turn_factor; // Reduce left motor speed
+        //right_pid_output *= turn_factor; // Reduce right motor speed
+        set_left_motor_spd(40);  // Sharp turn: left motor slows down
+        set_right_motor_spd(70);
     }
+
     float left_motor_speed = left_pid_output;
     float right_motor_speed = right_pid_output;
 
@@ -927,8 +933,8 @@ void motor_control_task(void *pvParameters) {
     while (true) {
         if (auto_mode && !is_turning) {
             // Get current RPM from encoders (you need to implement these functions)
-            float left_rpm = getLeftWheelRPM(100);  // Example: measure left wheel RPM over 100ms
-            float right_rpm = getRightWheelRPM(100);  // Example: measure right wheel RPM over 100ms
+            float left_rpm = getLeftWheelRPM(50);  // Example: measure left wheel RPM over 100ms
+            float right_rpm = getRightWheelRPM(50);  // Example: measure right wheel RPM over 100ms
 
             // Calculate the time difference (dt) between iterations
             absolute_time_t current_time = get_absolute_time();
@@ -939,11 +945,11 @@ void motor_control_task(void *pvParameters) {
             update_motor_speeds(left_rpm, right_rpm, dt);
 
             // Delay for a short time to avoid busy-waiting
-            vTaskDelay(pdMS_TO_TICKS(100));  // Adjust the delay as necessary
+              // Adjust the delay as necessary
         } else {
             
             continue;
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            
             
         }
         
@@ -1184,22 +1190,17 @@ void line_following_task(void *pvParameters) {
         }
         if (line_following_mode) {
             if (gpio_get(LINE_SENSOR_PIN) == 0) {
-                printf("WHITE\n");
+                //printf("WHITE\n");
                 on_black = false;
-                go(45);
+                target_speed = 45; // Set target speed for straight movement
             } else {
-                printf("BLACK\n");
+                //printf("BLACK\n");
                 on_black = true;
-                /* printf("No line detected, finding line now\n");
-                stop();
-                sleep_ms(500);
-                find_line(7); */
-
+                target_speed = 40; // Optionally lower speed slightly when turning
+                // TODO: ttry adding a delay to stop it from changing to white too quickly so that it can turn more
             }
-            
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(10)); //TODO: try lower or remove this to make it respond faster
     }
 }
 
