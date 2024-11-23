@@ -9,7 +9,7 @@
 #define TCP_PORT 4242
 #define BUF_SIZE 2048
 
-// Define the structure expected from the server (updated structure)
+// Define the structure expected from the server
 typedef struct {
     float forward_spd;
     float backward_spd;
@@ -54,26 +54,27 @@ static err_t tcp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     }
 
     if (p->tot_len > 0) {
-        // Ensure the buffer is not larger than our struct
-        if (p->tot_len != sizeof(dirCommands)) {
-            printf("Unexpected message size: %d (expected: %lu)\n", p->tot_len, sizeof(dirCommands));
-            tcp_recved(tpcb, p->tot_len); // Acknowledge receipt of the data to the server
-            pbuf_free(p);
-            return ERR_OK;
+        printf("Data received from server (%d bytes).\n", p->tot_len);
+
+        // Copy the received data into the local buffer
+        size_t len = pbuf_copy_partial(p, state->buffer_recv, p->tot_len, 0);
+        state->buffer_recv[len] = '\0'; // Null-terminate the received buffer for safety
+
+        // Check if the data matches the expected size of the structure
+        if (len == sizeof(dirCommands)) {
+            dirCommands *received_cmd = (dirCommands *)state->buffer_recv;
+
+            printf("Receiving Direction Commands...\n");
+            printf("[Accelerometer]  Forward Speed: %.2f\n", received_cmd->forward_spd);
+            printf("[Accelerometer]  Backward Speed: %.2f\n", received_cmd->backward_spd);
+            printf("[Accelerometer]  Turn Right Speed: %.2f\n", received_cmd->turn_right_spd);
+            printf("[Accelerometer]  Turn Left Speed: %.2f\n", received_cmd->turn_left_spd);
+            printf("[Accelerometer] Stop: %s\n", received_cmd->stop ? "True" : "False");
+            printf("[Accelerometer]  Auto Mode: %s\n", received_cmd->auto_mode ? "True" : "False");
+        } else {
+            printf("Received unexpected data size: %d bytes\n", len);
+            printf("Data: %s\n", state->buffer_recv);
         }
-
-        // Copy the data into the buffer
-        pbuf_copy_partial(p, state->buffer_recv, p->tot_len, 0);
-
-        // Cast the buffer to the dirCommands struct and print its contents
-        dirCommands *received_cmd = (dirCommands *)state->buffer_recv;
-        printf("Receiving Direction Commands...\n");
-        printf("[Accelerometer]  Forward Speed: %.2f\n", received_cmd->forward_spd);
-        printf("[Accelerometer]  Backward Speed: %.2f\n", received_cmd->backward_spd);
-        printf("[Accelerometer]  Turn Right Speed: %.2f\n", received_cmd->turn_right_spd);
-        printf("[Accelerometer]  Turn Left Speed: %.2f\n", received_cmd->turn_left_spd);
-        printf("[Accelerometer] Stop: %s\n", received_cmd->stop ? "True" : "False");
-        printf("[Accelerometer]  Auto Mode: %s\n", received_cmd->auto_mode ? "True" : "False");
 
         // Indicate that the data has been received
         tcp_recved(tpcb, p->tot_len);
