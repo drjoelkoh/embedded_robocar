@@ -42,6 +42,20 @@ typedef struct {
     bool auto_mode;
 } DirectionCommands;
 
+typedef struct {
+    float forward_spd;
+    float backward_spd;
+    float turn_right_spd;
+    float turn_left_spd;
+    bool stop;
+    bool auto_mode;
+    float detected_distance;
+    float distance_travelled;
+    float left_wheel_rpm;
+    float right_wheel_rpm;
+} CarStatus;
+
+CarStatus car_status = {0.0f, 0.0f, 0.0f, 0.0f, false, false, 0.0f, 0.0f, 0.0f, 0.0f};
 
 
 // pins for motor stuff
@@ -70,6 +84,8 @@ float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
 float prev_motor_speed = 0;
 float pwm_clock = 0;
+float left_wheel_rpm = 0;
+float right_wheel_rpm = 0;
 uint16_t wrap_value = 0;
 MessageBufferHandle_t directionMessageBuffer;
 MessageBufferHandle_t speedMessageBuffer; 
@@ -97,7 +113,8 @@ absolute_time_t last_pulse_time_right;
 float last_printed_distance = -1.0;
 float total_distance_travelled = 0.0;
 
-#define PROXIMITY_DIST 17.0 // Distance threshold in cm for object detection
+#define PROXIMITY_DIST 20.0 // Distance threshold in cm for object detection
+float detected_distance = 0.0;
 volatile bool pulse_started = false;
 volatile uint32_t pulse_start_time = 0;
 volatile uint32_t pulse_end_time = 0;
@@ -107,6 +124,7 @@ volatile bool is_stopping = false;
 volatile bool stopped = false;
 volatile bool on_black = false;
 volatile bool motor_control_enabled = true;
+volatile bool emergency_stop = false;
 
 
 //IR sensor stuff
@@ -152,6 +170,7 @@ void turn_right(float speed);
 void turn_left(float speed);
 void stop();
 void go(float speed);
+void ebrake();
 void line_following();
 void find_line();
 
@@ -257,6 +276,18 @@ typedef struct {
     DirectionCommands dir_commands;  // Store the messages (e.g., turnleft, turnright)
 } TCP_SERVER_T;
 
+void update_car_status(CarStatus *car_status, DirectionCommands *dir_commands) {
+    car_status->forward_spd = dir_commands->forward_spd;
+    car_status->backward_spd = dir_commands->backward_spd;
+    car_status->turn_right_spd = dir_commands->turn_right_spd;
+    car_status->turn_left_spd = dir_commands->turn_left_spd;
+    car_status->stop = dir_commands->stop;
+    car_status->auto_mode = dir_commands->auto_mode;
+    car_status->detected_distance = detected_distance;
+    car_status->distance_travelled = total_distance_travelled;
+    car_status->left_wheel_rpm = left_wheel_rpm;
+    car_status->right_wheel_rpm = right_wheel_rpm;
+}
 
 // Initialize the server's state
 static TCP_SERVER_T *tcp_server_init(void) {
@@ -314,7 +345,9 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 
             // Relay the received data to all clients except the sender
             // THIS FUNCTION SEND STUFF TO DASHBOARD
-            tcp_server_send_to_clients(state, (uint8_t *)&state->dir_commands, sizeof(DirectionCommands), tpcb);
+            update_car_status(&car_status, &state->dir_commands);
+            tcp_server_send_to_clients(state, (uint8_t *)&car_status, sizeof(CarStatus), tpcb);
+            //tcp_server_send_to_clients(state, (uint8_t *)&state->dir_commands, sizeof(DirectionCommands), tpcb);
             sendDirectioncontrolMessage(&state->dir_commands, sizeof(state->dir_commands));
             //xMessageBufferSend(directionControlMessageBuffer, &state->dir_commands, sizeof(DirectionCommands), portMAX_DELAY);
         } else {
@@ -430,7 +463,7 @@ void direction_controls (void *pvParameters) {
     while (true) {
         if (!auto_mode) {
             if (xMessageBufferReceive(directionControlMessageBuffer, &dir_commands, sizeof(dir_commands), portMAX_DELAY) > 0) {
-                if (dir_commands.forward_spd > 0) {
+                if (dir_commands.forward_spd > 0 && !emergency_stop) {
                     if (dir_commands.turn_left_spd > 0) {
                         remote_forward_turn_left(50);
                     } else if (dir_commands.turn_right_spd > 0) {
@@ -460,33 +493,7 @@ void direction_controls (void *pvParameters) {
 
 
 
-                /* if (dir_commands.forward_spd > 0) {
-                    dir_commands.forward_spd > 50 ? dir_commands.forward_spd = 50 : dir_commands.forward_spd;
-                    remote_forward(50);
-                    
-                } else if (dir_commands.backward_spd > 0) {
-                    dir_commands.backward_spd > 60 ? dir_commands.backward_spd = 60 : dir_commands.backward_spd;
-                    remote_backward(50);
-                    
-                if (dir_commands.turn_right_spd > 0 && dir_commands.turn_right_spd > dir_commands.forward_spd) {
-                        dir_commands.turn_right_spd += dir_commands.forward_spd/2;
-                        dir_commands.turn_right_spd < 50 ? dir_commands.turn_right_spd = 50 : dir_commands.turn_right_spd;
-                        remote_turn_right(50);
-                        
-                }
-                if (dir_commands.turn_left_spd > 0 && dir_commands.turn_left_spd > dir_commands.forward_spd) {
-                        dir_commands.turn_left_spd += dir_commands.forward_spd/2;
-                        dir_commands.turn_left_spd < 50 ? dir_commands.turn_left_spd = 50 : dir_commands.turn_left_spd;
-                        remote_turn_left(50);
-                        
-                }
-                } if (dir_commands.stop) {
-                    set_left_motor_spd(0);
-                    set_right_motor_spd(0);
-                    
-                } if (dir_commands.auto_mode) {
-                    auto_mode = !auto_mode;
-                } */
+
             }
         }
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -853,12 +860,14 @@ void wheel_speed_task(void *pvParameters) {
         if (speedL != previous_speed_L) {
             xMessageBufferSend(leftWheelSpeedMessageBuffer, &speedL, sizeof(speedL), portMAX_DELAY);
             previous_speed_L = speedL;
+            left_wheel_rpm = speedL;
         }
         
         float speedR = getRightWheelRPM(100);
         if (speedR != previous_speed_R) {
             xMessageBufferSend(rightWheelSpeedMessageBuffer, &speedR, sizeof(speedR), portMAX_DELAY);
             previous_speed_R = speedR;
+            right_wheel_rpm = speedR;
         }
         
         vTaskDelay(sampleTimeTicks); // Delay for the sampling period
@@ -998,7 +1007,7 @@ void motor_control_task(void *pvParameters) {
     absolute_time_t last_time = get_absolute_time();
     
     while (true) {
-        if (auto_mode && !is_turning) {
+        if (auto_mode && !is_turning && !emergency_stop) {
             // Get current RPM from encoders (you need to implement these functions)
             float left_rpm = getLeftWheelRPM(50);  // Example: measure left wheel RPM over 100ms
             float right_rpm = getRightWheelRPM(50);  // Example: measure right wheel RPM over 100ms
@@ -1036,6 +1045,9 @@ void isr_handler(uint gpio, uint32_t events) {
                 pulse_started = false;
                 // Calculate distance in cm
                 float distance = (pulse_duration / 2.0) * 0.0343;
+                if (distance < 100) {
+                    detected_distance = distance;
+                }
                 if (distance <= PROXIMITY_DIST && distance > 1.0) {
                     object_detected = true;
                 } else {
@@ -1110,7 +1122,7 @@ void auto_mode_task(void *pvParameters) {
 
     while (true) {
         if (auto_mode) {
-            if (!in_cooldown && !stopped && !on_black) {
+            if (!in_cooldown && !stopped && !on_black && !emergency_stop) {
 
                 if (is_moving) {
                     set_motor_direction(is_clockwise);
@@ -1140,11 +1152,14 @@ void auto_mode_task(void *pvParameters) {
 void proximitiy_stop(void *pvParameters) {
     while (true) {
         float distance = getCm(ULTRA_TRIG, ULTRA_ECHO);
+        //xMessageBufferSend(objectDistanceMessageBuffer, &distance, sizeof(distance), portMAX_DELAY);
         if (object_detected) {
-            printf("Distance from object: %.2f cm\n", distance);
+            printf("[Ultrasonic] Object detected at %.2f cm\n", distance);
+            ebrake();
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         else {
+            emergency_stop = false;
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
@@ -1200,6 +1215,13 @@ void stop() {
     stopped = true;
     //set_motor_spd(LEFT_MOTOR_PIN, 0);
     //set_motor_spd(RIGHT_MOTOR_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+void ebrake() {
+    emergency_stop = true;
+    set_left_motor_spd(0);
+    set_right_motor_spd(0);
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
