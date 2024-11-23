@@ -8,6 +8,7 @@
 #define SERVER_IP "172.20.10.11"  // Set the server's IP address
 #define TCP_PORT 4242
 #define BUF_SIZE 2048
+#define CHANGE_THRESHOLD 20
 
 // Define the structure expected from the server (updated structure)
 typedef struct {
@@ -19,11 +20,30 @@ typedef struct {
     bool auto_mode;
 } DirectionCommands;
 
+
+
+DirectionCommands prev_commands = {0.0f, 0.0f, 0.0f, 0.0f, false, false};
+
+typedef struct {
+    float forward_spd;
+    float backward_spd;
+    float turn_right_spd;
+    float turn_left_spd;
+    bool stop;
+    bool auto_mode;
+    float detected_distance;
+    float distance_travelled;
+    float left_wheel_rpm;
+    float right_wheel_rpm;
+} CarStatus;
+
+CarStatus prev_car_status = {0.0f, 0.0f, 0.0f, 0.0f, false, false, 0.0f, 0.0f, 0.0f, 0.0f};
+
 typedef struct TCP_CLIENT_T_ {
     struct tcp_pcb *client_pcb;
     bool connected;
     uint8_t buffer_recv[BUF_SIZE];
-    DirectionCommands dir_commands;
+    CarStatus car_status;
 
 } TCP_CLIENT_T;
 
@@ -59,24 +79,51 @@ static err_t tcp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
         pbuf_copy_partial(p, state->buffer_recv, p->tot_len, 0);
         state->buffer_recv[p->tot_len] = '\0';  // Null-terminate the received string
 
-        if (p->tot_len == sizeof(DirectionCommands)) {
+        if (p->tot_len == sizeof(CarStatus)) {
         // Copy the data into the buffer
-        pbuf_copy_partial(p, &state->dir_commands, sizeof(DirectionCommands), 0);
+        pbuf_copy_partial(p, &state->car_status, sizeof(CarStatus), 0);
 
 /*         // Cast the buffer to the DirectionCommands struct and print its contents
         DirectionCommands *received_cmd = (DirectionCommands *)state->buffer_recv; */
-        printf("Receiving Direction Commands...\n");
-        printf("[Accelerometer]  Forward Speed: %.2f\n", state->dir_commands.forward_spd);
-        printf("[Accelerometer]  Backward Speed: %.2f\n", state->dir_commands.backward_spd);
-        printf("[Accelerometer]  Turn Right Speed: %.2f\n", state->dir_commands.turn_right_spd);
-        printf("[Accelerometer]  Turn Left Speed: %.2f\n", state->dir_commands.turn_left_spd);
-        printf("[Accelerometer] Stop: %s\n", state->dir_commands.stop ? "True" : "False");
-        printf("[Accelerometer]  Auto Mode: %s\n", state->dir_commands.auto_mode ? "True" : "False");
+        //printf("Receiving Direction Commands...\n");
+        if (state->car_status.forward_spd > prev_car_status.forward_spd + CHANGE_THRESHOLD) {
+            printf("[Accelerometer]  Forward Tilt: %.2f\n", state->car_status.forward_spd);
+        }
+        if (state->car_status.backward_spd > prev_car_status.backward_spd + CHANGE_THRESHOLD) {
+            printf("[Accelerometer]  Backward Tilt: %.2f\n", state->car_status.backward_spd);
+        }
+        if (state->car_status.turn_right_spd > prev_car_status.turn_right_spd + CHANGE_THRESHOLD) {
+            printf("[Accelerometer]  Turn Right Tilt: %.2f\n", state->car_status.turn_right_spd);
+        }
+        if (state->car_status.turn_left_spd > prev_car_status.turn_left_spd + CHANGE_THRESHOLD) {
+            printf("[Accelerometer]  Turn Left Tilt: %.2f\n", state->car_status.turn_left_spd);
+        }
+        if (state->car_status.stop != prev_car_status.stop) {
+            printf("[Accelerometer] Stop: %s\n", state->car_status.stop ? "True" : "False");
+        }
+        if (state->car_status.auto_mode != prev_car_status.auto_mode) {
+            printf("[Accelerometer]  Auto Mode: %s\n", state->car_status.auto_mode ? "True" : "False");
+        }
+        if (state->car_status.detected_distance != prev_car_status.detected_distance) {
+            printf("[ULTRASONIC]  Detected Object Distance: %.2f\n", state->car_status.detected_distance);
+        }
+        if (state->car_status.distance_travelled != prev_car_status.distance_travelled) {
+            printf("[ENCODER]  Distance Travelled: %.2f\n", state->car_status.distance_travelled);
+        }
+        if (state->car_status.left_wheel_rpm != prev_car_status.left_wheel_rpm) {
+            printf("[ENCODER]  Left Wheel RPM: %.2f\n", state->car_status.left_wheel_rpm);
+        }
+        if (state->car_status.right_wheel_rpm != prev_car_status.right_wheel_rpm) {
+            printf("[ENCODER]  Right Wheel RPM: %.2f\n", state->car_status.right_wheel_rpm);
+        }
+        
+
+        prev_car_status = state->car_status;  // Update the previous commands
 
         // Indicate that the data has been received
         tcp_recved(tpcb, p->tot_len);
         } else {
-            printf("Received data size mismatch. Expected %zu bytes, got %u bytes.\n", sizeof(DirectionCommands), p->tot_len);
+            printf("Received data size mismatch. Expected %zu bytes, got %u bytes.\n", sizeof(CarStatus), p->tot_len);
         }
     }
 
