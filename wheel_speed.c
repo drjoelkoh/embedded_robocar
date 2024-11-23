@@ -22,6 +22,7 @@
 //Wifi stuff
 #define TCP_PORT 4242
 #define BUF_SIZE 2048
+#define CHANGES_THRESHOLD 20
 
 // Define a message buffer structure to store different types of accelerometer commands
 /* typedef struct {
@@ -130,6 +131,10 @@ void remote_forward(float speed);
 void remote_backward(float speed);
 void remote_turn_left(float speed);
 void remote_turn_right(float speed);
+void remote_forward_turn_left(float speed);
+void remote_forward_turn_right(float speed);
+void remote_backward_turn_left(float speed);
+void remote_backward_turn_right(float speed);
 void go_stop(float distance);
 void turn_right_90(float speed);
 float convertRPMToSpeed(float current_rpm, float desired_rpm);
@@ -426,6 +431,36 @@ void direction_controls (void *pvParameters) {
         if (!auto_mode) {
             if (xMessageBufferReceive(directionControlMessageBuffer, &dir_commands, sizeof(dir_commands), portMAX_DELAY) > 0) {
                 if (dir_commands.forward_spd > 0) {
+                    if (dir_commands.turn_left_spd > 0) {
+                        remote_forward_turn_left(50);
+                    } else if (dir_commands.turn_right_spd > 0) {
+                        remote_forward_turn_right(50);
+                    } else {
+                        remote_forward(50);
+                    }
+                } else if (dir_commands.backward_spd > 0) {
+                    if (dir_commands.turn_left_spd > 0) {
+                        remote_backward_turn_left(50);
+                    } else if (dir_commands.turn_right_spd > 0) {
+                        remote_backward_turn_right(50);
+                    } else {
+                        remote_backward(50);
+                    }
+                } else if (dir_commands.stop) {
+                    set_left_motor_spd(0);
+                    set_right_motor_spd(0);
+                }
+                if (dir_commands.stop) {
+                    set_left_motor_spd(0);
+                    set_right_motor_spd(0);
+                } 
+                if (dir_commands.auto_mode) {
+                    auto_mode = !auto_mode;
+                } 
+
+
+
+                /* if (dir_commands.forward_spd > 0) {
                     dir_commands.forward_spd > 50 ? dir_commands.forward_spd = 50 : dir_commands.forward_spd;
                     remote_forward(50);
                     
@@ -451,7 +486,7 @@ void direction_controls (void *pvParameters) {
                     
                 } if (dir_commands.auto_mode) {
                     auto_mode = !auto_mode;
-                }
+                } */
             }
         }
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -546,6 +581,38 @@ void remote_turn_right(float speed) {
     set_left_motor_direction(is_clockwise);
     set_right_motor_direction(!is_clockwise);
     set_left_motor_spd(speed);
+    set_right_motor_spd(speed);
+}
+
+void remote_forward_turn_left(float speed) {
+    printf("[Remote] Moving forward and turning left\n");
+    set_left_motor_direction(is_clockwise);
+    set_right_motor_direction(is_clockwise);
+    set_left_motor_spd(speed);
+    set_right_motor_spd(speed+30);
+}
+
+void remote_forward_turn_right(float speed) {
+    printf("[Remote] Moving forward and turning right\n");
+    set_left_motor_direction(is_clockwise);
+    set_right_motor_direction(is_clockwise);
+    set_left_motor_spd(speed+30);
+    set_right_motor_spd(speed);
+}
+
+void remote_backward_turn_left(float speed) {
+    printf("[Remote] Moving backward and turning left\n");
+    set_left_motor_direction(!is_clockwise);
+    set_right_motor_direction(!is_clockwise);
+    set_left_motor_spd(speed);
+    set_right_motor_spd(speed+30);
+}
+
+void remote_backward_turn_right(float speed) {
+    printf("[Remote] Moving backward and turning right\n");
+    set_left_motor_direction(!is_clockwise);
+    set_right_motor_direction(!is_clockwise);
+    set_left_motor_spd(speed+30);
     set_right_motor_spd(speed);
 }
 
