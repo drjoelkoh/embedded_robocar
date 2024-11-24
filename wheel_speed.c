@@ -53,9 +53,10 @@ typedef struct {
     float distance_travelled;
     float left_wheel_rpm;
     float right_wheel_rpm;
+    char decoded_char;
 } CarStatus;
 
-CarStatus car_status = {0.0f, 0.0f, 0.0f, 0.0f, false, false, 0.0f, 0.0f, 0.0f, 0.0f};
+CarStatus car_status = {0.0f, 0.0f, 0.0f, 0.0f, false, false, 0.0f, 0.0f, 0.0f, 0.0f, ' '};
 
 
 // pins for motor stuff
@@ -136,7 +137,8 @@ volatile bool emergency_stop = false;
 #define MAX_PULSES 200
 #define TOTAL_CHAR 43
 #define DEBOUNCE_DELAY_US 20000
-#define PULSE_COUNT_THRESHOLD 7
+#define PULSE_COUNT_THRESHOLD 9
+
 
 
 void init_motor_control();
@@ -1082,6 +1084,7 @@ void isr_handler(uint gpio, uint32_t events) {
                     if (decoded_char) {
                         /* printf("Decoded character: %c\n", *decoded_char); */
                         xMessageBufferSend(barcodeMessageBuffer, decoded_char, sizeof(*decoded_char), portMAX_DELAY);
+                        car_status.decoded_char = *decoded_char;
                     }
                     is_scanning_active = false;
                 }
