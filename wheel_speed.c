@@ -78,7 +78,7 @@ bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
 bool line_following_mode = false;
-bool auto_mode = true; //MAKE THIS FALSE TO START UP IN REMOTE CONTROL MODE
+bool auto_mode = false; //MAKE THIS FALSE TO START UP IN REMOTE CONTROL MODE
 float target_speed = 60; //target
 float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
@@ -464,6 +464,10 @@ void direction_controls (void *pvParameters) {
     while (true) {
         if (!auto_mode) {
             if (xMessageBufferReceive(directionControlMessageBuffer, &dir_commands, sizeof(dir_commands), portMAX_DELAY) > 0) {
+                if (dir_commands.auto_mode) {
+                    auto_mode = true;
+                    line_following_mode = true;
+                }
                 if (dir_commands.forward_spd > 0 && !emergency_stop) {
                     if (dir_commands.turn_left_spd > 0) {
                         remote_forward_turn_left(50);
@@ -484,14 +488,6 @@ void direction_controls (void *pvParameters) {
                     set_left_motor_spd(0);
                     set_right_motor_spd(0);
                 }
-                if (dir_commands.stop) {
-                    set_left_motor_spd(0);
-                    set_right_motor_spd(0);
-                } 
-                if (dir_commands.auto_mode) {
-                    auto_mode = true;
-                    line_following_mode = true;
-                } 
             }
         }
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -1277,6 +1273,10 @@ void line_following_task(void *pvParameters) {
             line_following_mode = !line_following_mode;
             printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
             vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        if (gpio_get(LINE_SENSOR_PIN)==1) {
+            auto_mode = true;
+            line_following_mode = true;
         }
         if (line_following_mode) {
             if (gpio_get(LINE_SENSOR_PIN) == 0) {
