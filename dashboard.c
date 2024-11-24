@@ -35,9 +35,10 @@ typedef struct {
     float distance_travelled;
     float left_wheel_rpm;
     float right_wheel_rpm;
+    char decoded_char;
 } CarStatus;
 
-CarStatus prev_car_status = {0.0f, 0.0f, 0.0f, 0.0f, false, false, 0.0f, 0.0f, 0.0f, 0.0f};
+CarStatus prev_car_status = {0.0f, 0.0f, 0.0f, 0.0f, false, false, 0.0f, 0.0f, 0.0f, 0.0f, ' '};
 
 typedef struct TCP_CLIENT_T_ {
     struct tcp_pcb *client_pcb;
@@ -115,6 +116,9 @@ static err_t tcp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
         }
         if (state->car_status.right_wheel_rpm != prev_car_status.right_wheel_rpm) {
             printf("[ENCODER]  Right Wheel RPM: %.2f\n", state->car_status.right_wheel_rpm);
+        }
+        if (state->car_status.decoded_char != prev_car_status.decoded_char) {
+            printf("[IR DECODER]  Decoded Character: %c\n", state->car_status.decoded_char);
         }
         
 
