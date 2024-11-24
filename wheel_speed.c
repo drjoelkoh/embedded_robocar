@@ -86,6 +86,7 @@ float prev_motor_speed = 0;
 float pwm_clock = 0;
 float left_wheel_rpm = 0;
 float right_wheel_rpm = 0;
+float black_turn_speed = 0;
 uint16_t wrap_value = 0;
 MessageBufferHandle_t directionMessageBuffer;
 MessageBufferHandle_t speedMessageBuffer; 
@@ -978,8 +979,8 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
         //right_pid_output *= turn_factor; // Reduce left motor speed
         //left_pid_output *= 2;
         //right_pid_output *= turn_factor; // Reduce right motor speed
-        left_pid_output = 85;
-        right_pid_output = 45;
+        left_pid_output = 85 + black_turn_speed;
+        right_pid_output = 45 - black_turn_speed;
     }
 
     float left_motor_speed = left_pid_output;
@@ -1286,6 +1287,7 @@ void line_following_task(void *pvParameters) {
                 //printf("BLACK\n");
                 on_black = true;
                 black_counter++;
+                black_turn_speed += 5;
                 target_speed = 80; // Optionally lower speed slightly when turning
                 vTaskDelay(pdMS_TO_TICKS(200+(100*black_counter)));
                 // TODO: ttry adding a delay to stop it from changing to white too quickly so that it can turn more
