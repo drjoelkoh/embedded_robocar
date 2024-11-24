@@ -69,7 +69,7 @@ CarStatus car_status = {0.0f, 0.0f, 0.0f, 0.0f, false, false, 0.0f, 0.0f, 0.0f, 
 //#define LOWSPD_BTN 21
 //#define HISPD_BTN 22
 #define DEBOUNCE_DELAY_MS 100
-#define pwm_freq 500
+#define pwm_freq 1000
 //#define target_speed 100
 //#define desired_rpm 2400
 
@@ -78,7 +78,7 @@ bool is_clockwise = true;
 bool turning_right = false;
 bool is_moving = true;
 bool line_following_mode = false;
-bool auto_mode = false; //MAKE THIS FALSE TO START UP IN REMOTE CONTROL MODE
+bool auto_mode = true; //MAKE THIS FALSE TO START UP IN REMOTE CONTROL MODE
 float target_speed = 60; //target
 float desired_rpm_left = 1800;
 float desired_rpm_right = 1800;
@@ -488,12 +488,9 @@ void direction_controls (void *pvParameters) {
                     set_right_motor_spd(0);
                 } 
                 if (dir_commands.auto_mode) {
-                    auto_mode = !auto_mode;
+                    auto_mode = true;
+                    line_following_mode = true;
                 } 
-
-
-
-
             }
         }
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -977,11 +974,12 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
     // Line-following logic for turning
     if (on_black) {
         // Gradually reduce speed of one motor for turning
-        //float turn_factor = 0.5;  // Adjust this for sharper or smoother turns
-        //left_pid_output *= turn_factor; // Reduce left motor speed
+        //float turn_factor = 0.6;  // Adjust this for sharper or smoother turns
+        //right_pid_output *= turn_factor; // Reduce left motor speed
+        //left_pid_output *= 2;
         //right_pid_output *= turn_factor; // Reduce right motor speed
-        set_left_motor_spd(40);  // Sharp turn: left motor slows down
-        set_right_motor_spd(70);
+        left_pid_output = 85;
+        right_pid_output = 45;
     }
 
     float left_motor_speed = left_pid_output;
@@ -996,11 +994,11 @@ void update_motor_speeds(float left_rpm, float right_rpm, float dt) {
 
     // Set motor speeds
     
-    set_left_motor_spd(left_motor_speed);
-    set_right_motor_spd(right_motor_speed);
+    //set_left_motor_spd(left_motor_speed);
+    //set_right_motor_spd(right_motor_speed);
     
-    //set_motor_spd(LEFT_MOTOR_PIN, left_motor_speed);
-    //set_motor_spd(RIGHT_MOTOR_PIN, right_motor_speed);
+    set_motor_spd(LEFT_MOTOR_PIN, left_motor_speed);
+    set_motor_spd(RIGHT_MOTOR_PIN, right_motor_speed);
 }
 
 void motor_control_task(void *pvParameters) {
@@ -1271,6 +1269,8 @@ void ir_sensor_init() {
 } */
 
 void line_following_task(void *pvParameters) {
+    int black_counter = 0;
+
     while (true) {
         if (gpio_get(line_follow_toggle_btn) == 0) {
             line_following_mode = !line_following_mode;
@@ -1281,11 +1281,13 @@ void line_following_task(void *pvParameters) {
             if (gpio_get(LINE_SENSOR_PIN) == 0) {
                 //printf("WHITE\n");
                 on_black = false;
-                target_speed = 45; // Set target speed for straight movement
+                target_speed = 60; // Set target speed for straight movement
             } else {
                 //printf("BLACK\n");
                 on_black = true;
-                target_speed = 40; // Optionally lower speed slightly when turning
+                black_counter++;
+                target_speed = 80; // Optionally lower speed slightly when turning
+                vTaskDelay(pdMS_TO_TICKS(200+(100*black_counter)));
                 // TODO: ttry adding a delay to stop it from changing to white too quickly so that it can turn more
             }
         }
