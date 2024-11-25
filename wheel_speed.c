@@ -129,7 +129,7 @@ volatile bool emergency_stop = false;
 #define TOTAL_CHAR 43
 #define DEBOUNCE_DELAY_US 20000
 #define PULSE_COUNT_THRESHOLD 9
-
+volatile bool decocde_done = false;
 
 
 void init_motor_control();
@@ -1024,6 +1024,7 @@ void isr_handler(uint gpio, uint32_t events) {
                         /* printf("Decoded character: %c\n", *decoded_char); */
                         xMessageBufferSend(barcodeMessageBuffer, decoded_char, sizeof(*decoded_char), portMAX_DELAY);
                         car_status.decoded_char = *decoded_char;
+                        decoded_done = true;
                     }
                     is_scanning_active = false;
                 }
