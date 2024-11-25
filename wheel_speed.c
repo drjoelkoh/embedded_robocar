@@ -115,14 +115,15 @@ volatile bool object_detected = false;
 volatile bool is_turning = false;
 volatile bool is_stopping = false;
 volatile bool stopped = false;
-volatile bool on_black = false;
+volatile bool on_black_R = false;
+volatile bool on_black_L = false;
 volatile bool motor_control_enabled = true;
 volatile bool emergency_stop = false;
 
 
 //IR sensor stuff
-#define LINE_SENSOR_PIN 26 // iswapped these
-#define BARCODE_SENSOR_PIN 27
+#define LINE_SENSOR_L_PIN 27 // iswapped these
+#define BARCODE_SENSOR_PIN 26
 #define BLACK_THRESHOLD 165
 #define line_follow_toggle_btn 20
 #define MAX_PULSES 200
@@ -999,36 +1000,38 @@ void isr_handler(uint gpio, uint32_t events) {
             //global_pulse_count_for_turn_right++;
             break;
         case BARCODE_SENSOR_PIN:
-            interrupt_time = time_us_64();
-
-            if (interrupt_time - last_interrupt_time < DEBOUNCE_DELAY_US) {
-                return;
-            }
-            last_interrupt_time = interrupt_time;
-
-            if (!is_scanning_active) {
-                is_scanning_active = true;
-                init_pulse_width_vector(&pulse_vector);
-                pulse_start = time_us_64();
-            } else {
-                uint32_t pulse_width = time_us_64() - pulse_start;
-                add_pulse_width(&pulse_vector, pulse_width);
-                pulse_start = time_us_64();
-
-                if (pulse_vector.count >= PULSE_COUNT_THRESHOLD) {
-                    uint64_t threshold = calculate_threshold(&pulse_vector);
-                    normalize_pulse_widths(&pulse_vector, scanned_binary_code, threshold);
-                    const char *decoded_char = decode_from_patterns(scanned_binary_code, PULSE_COUNT_THRESHOLD);
-                    
-                    if (decoded_char) {
-                        /* printf("Decoded character: %c\n", *decoded_char); */
-                        xMessageBufferSend(barcodeMessageBuffer, decoded_char, sizeof(*decoded_char), portMAX_DELAY);
-                        car_status.decoded_char = *decoded_char;
-                        decoded_done = true;
-                    }
-                    is_scanning_active = false;
+            if (!decoded_done) {
+                interrupt_time = time_us_64();
+    
+                if (interrupt_time - last_interrupt_time < DEBOUNCE_DELAY_US) {
+                    return;
                 }
+                last_interrupt_time = interrupt_time;
+    
+                if (!is_scanning_active) {
+                    is_scanning_active = true;
+                    init_pulse_width_vector(&pulse_vector);
+                    pulse_start = time_us_64();
+                } else {
+                    uint32_t pulse_width = time_us_64() - pulse_start;
+                    add_pulse_width(&pulse_vector, pulse_width);
+                    pulse_start = time_us_64();
+    
+                    if (pulse_vector.count >= PULSE_COUNT_THRESHOLD) {
+                        uint64_t threshold = calculate_threshold(&pulse_vector);
+                        normalize_pulse_widths(&pulse_vector, scanned_binary_code, threshold);
+                        const char *decoded_char = decode_from_patterns(scanned_binary_code, PULSE_COUNT_THRESHOLD);
+                        
+                        if (decoded_char) {
+                            /* printf("Decoded character: %c\n", *decoded_char); */
+                            xMessageBufferSend(barcodeMessageBuffer, decoded_char, sizeof(*decoded_char), portMAX_DELAY);
+                            car_status.decoded_char = *decoded_char;
+                            decoded_done = true;
+                        }
+                        is_scanning_active = false;
+                    }
             break;
+            }
         }
     }
 }
@@ -1190,23 +1193,39 @@ void line_following_task(void *pvParameters) {
             printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
-        if (gpio_get(LINE_SENSOR_PIN)==1) {
+        if (!auto_mode) {
+            if (gpio_get(LINE_SENSOR_L_PIN)==1) {
             auto_mode = true;
             line_following_mode = true;
+            car_status.decoded_char = 'Z';
+            }
         }
-        if (line_following_mode) {
-            if (gpio_get(LINE_SENSOR_PIN) == 0) {
-                //printf("WHITE\n");
-                on_black = false;
+
+        if (line_following_mode && decoded_done) {
+            if (gpio_get(LINE_SENSOR_L_PIN) == 0 && gpio_get(BARCODE_SENSOR_PIN) == 0) {
+                on_black_R = false;
+                on_black_L = false;
                 target_speed = 60; // Set target speed for straight movement
-            } else {
-                //printf("BLACK\n");
-                on_black = true;
+            }
+            else if (gpio_get(LINE_SENSOR_L_PIN) == 1 && gpio_get(BARCODE_SENSOR_PIN) == 0) {
                 black_counter++;
-                black_turn_speed += 5;
-                target_speed = 80; // Optionally lower speed slightly when turning
-                vTaskDelay(pdMS_TO_TICKS(200+(100*black_counter)));
-                // TODO: ttry adding a delay to stop it from changing to white too quickly so that it can turn more
+                if (black_counter > 4) {
+                    on_black_L = true;
+                    on_black_R = false;
+                    target_speed = 80; 
+                    
+                }
+                vTaskDelay(pdMS_TO_TICKS(300));
+            }
+            else if (gpio_get(LINE_SENSOR_L_PIN) == 0 && gpio_get(BARCODE_SENSOR_PIN) == 1) {
+                black_counter++;
+                if (black_counter > 4) {
+                    on_black_L = false;
+                    on_black_R = true;
+                    target_speed = 80; 
+                    
+                }
+                vTaskDelay(pdMS_TO_TICKS(300));
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10)); //TODO: try lower or remove this to make it respond faster
