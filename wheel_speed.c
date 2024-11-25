@@ -24,15 +24,6 @@
 #define BUF_SIZE 2048
 #define CHANGES_THRESHOLD 20
 
-// Define a message buffer structure to store different types of accelerometer commands
-/* typedef struct {
-    char turnleft[BUF_SIZE];  // Buffer to store "turn left"
-    char turnright[BUF_SIZE]; // Buffer to store "turn right"
-    char forward[BUF_SIZE];   // Buffer to store "move forward"
-    char backward[BUF_SIZE];  // Buffer to store "move backward"
-    char stop[BUF_SIZE];      // Buffer to store "stop"
-} DirectionCommands; */
-
 typedef struct {
     float forward_spd;
     float backward_spd;
@@ -738,51 +729,6 @@ void turn_right_90(float speed) {
     
 }
 
-/* void turn_right(bool turn_right, float speed) {
-    if (turn_right) {
-        gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 0);
-        gpio_put(DIR_PIN3, 0); gpio_put(DIR_PIN4, 0); 
-        sleep_ms(300);
-        printf("Turning right\n");
-        set_motor_spd(LEFT_MOTOR_PIN, speed);
-        set_motor_spd(RIGHT_MOTOR_PIN, 0);
-        gpio_put(DIR_PIN1, 0); gpio_put(DIR_PIN2, 1); //clockwise
-        gpio_put(DIR_PIN3, 1); gpio_put(DIR_PIN4, 0); //anticlockwise
-        //set_motor_spd(LEFT_MOTOR_PIN, 100);
-        //set_motor_spd(RIGHT_MOTOR_PIN, 50);
-        is_turning = true;
-        printf("Turning flag is now true\n");
-        turn_right_90(speed);
-        
-    }
-    else {
-        
-        set_motor_direction(is_clockwise);
-        set_motor_spd(LEFT_MOTOR_PIN, 100);
-        set_motor_spd(RIGHT_MOTOR_PIN, 100);
-    }   
-} */
-
-
-// Task to handle motor speed based on button input
-/* void speed_task(void *pvParameters) {
-    while (true) {
-        uint32_t msg;
-        if (xMessageBufferReceive(speedMessageBuffer, &msg, sizeof(msg), portMAX_DELAY)) {
-            if (msg == LOWSPD_BTN) {
-                motor_speed = 50; // Change speed as desired
-                set_motor_spd(LEFT_MOTOR_PIN, motor_speed);
-                set_motor_spd(RIGHT_MOTOR_PIN, motor_speed);
-                printf("[Motor] Speed set to LOW%%\n"); // Update log message
-            } else if (msg == HISPD_BTN) {
-                motor_speed = 100;
-                set_motor_spd(LEFT_MOTOR_PIN, motor_speed);
-                set_motor_spd(RIGHT_MOTOR_PIN, motor_speed);
-                printf("[Motor] Speed set to HIGH%%\n");
-            }
-        }
-    }
-} */
 
 /* Initialise the Photo Interrupt sensor input pin */
 void encoderPinInit() {
@@ -805,14 +751,7 @@ void updateDistanceTraveled() {
     
 }
 
-/* Uses the photo interrupter sensor to measure the rotational speed of the encoder
-(Final version  will require wheel circumference specs to gauge distance and speed of car)
-ARGS: sample+time_ms: duration which the wheelspeed is measured over (ms)
-1. Wait for the regularly timed pulse edge trigger to start the measurement
-2. In the period of one pulse, count the number of times that the disc blocks the sensor (1-0 trigger)
-3. Divide the disc_pulse_count value by the duration of one time_pulse 
-4. 
-5. [To be implemented later] Multiply rotational speed by car wheel circumference to get actual distance and speed*/
+
 float getLeftWheelRPM(float sample_time_ms) {
     // measure the RPM at 
     absolute_time_t current_time;
@@ -1240,33 +1179,6 @@ void ir_sensor_init() {
     gpio_pull_down(line_follow_toggle_btn);
 }
 
-/* void line_following_task(void *pvParameters) {
-    while (true) {
-        uint32_t ir_value = adc_read();
-    
-        if (gpio_get(line_follow_toggle_btn) == 0) {
-            line_following_mode = !line_following_mode;
-            printf("Line following mode: %s\n", line_following_mode ? "Enabled" : "Disabled");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-        if (line_following_mode) {
-            stop();
-            if (ir_value < BLACK_THRESHOLD) {
-                
-                go();
-                printf("Line detected, IR sensor value: %d\n", ir_value);
-            
-            } else {
-               
-                printf("No line detected, IR sensor value: %d\n", ir_value);
-                stop();
-                sleep_ms(500);
-                turn_right();
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-} */
 
 void line_following_task(void *pvParameters) {
     int black_counter = 0;
