@@ -1197,7 +1197,6 @@ void line_following_task(void *pvParameters) {
             if (gpio_get(LINE_SENSOR_L_PIN)==1) {
             auto_mode = true;
             line_following_mode = true;
-            car_status.decoded_char = 'Z';
             }
         }
 
